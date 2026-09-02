@@ -1,0 +1,36 @@
+import { loadConfig } from './config/index.js';
+import { PulseServer } from './core/PulseServer.js';
+import { logger } from './utils/logger.js';
+
+export * from './types/index.js';
+export * from './config/index.js';
+export * from './utils/logger.js';
+export * from './core/PulseServer.js';
+
+async function bootstrap() {
+  const config = loadConfig();
+  const server = new PulseServer(config);
+
+  const handleSignal = async (signal: string) => {
+    logger.info(`Received ${signal}, initiating graceful shutdown...`);
+    await server.stop();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => handleSignal('SIGINT'));
+  process.on('SIGTERM', () => handleSignal('SIGTERM'));
+
+  try {
+    await server.start();
+  } catch (err) {
+    logger.error('Fatal error during Pulse server bootstrap', {
+      error: err instanceof Error ? err.message : String(err)
+    });
+    process.exit(1);
+  }
+}
+
+// Auto-run if invoked directly
+if (process.argv[1] && process.argv[1].endsWith('index.js')) {
+  bootstrap();
+}

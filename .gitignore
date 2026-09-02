@@ -1,0 +1,110 @@
+# ==============================================================================
+# Pulse — Distributed Real-Time Messaging Infrastructure
+# Root .gitignore
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Dependencies
+# ------------------------------------------------------------------------------
+node_modules/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.pnp.*
+
+# ------------------------------------------------------------------------------
+# Build & Distribution Artifacts
+# ------------------------------------------------------------------------------
+dist/
+build/
+out/
+.next/
+.vite/
+
+# ------------------------------------------------------------------------------
+# Testing & Code Coverage
+# ------------------------------------------------------------------------------
+coverage/
+.nyc_output/
+
+# ------------------------------------------------------------------------------
+# Environment Variables & Secrets
+# ------------------------------------------------------------------------------
+# Protect all local environment files containing secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+
+# Explicitly ensure sample configuration templates remain trackable
+!.env.example
+
+# ------------------------------------------------------------------------------
+# Logs & Process Outputs
+# ------------------------------------------------------------------------------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ------------------------------------------------------------------------------
+# Temporary Files & Scratches
+# ------------------------------------------------------------------------------
+tmp/
+temp/
+*.tmp
+
+# ------------------------------------------------------------------------------
+# IDE & Editor Artifacts
+# ------------------------------------------------------------------------------
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# JetBrains / IntelliJ IDEA
+.idea/
+*.iws
+*.iml
+
+# Other editors
+*.sublime-project
+*.sublime-workspace
+
+# ------------------------------------------------------------------------------
+# Operating System Artifacts
+# ------------------------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ------------------------------------------------------------------------------
+# Compiler & Tool Caches
+# ------------------------------------------------------------------------------
+.cache/
+.parcel-cache/
+.eslintcache
+*.tsbuildinfo
+
+# ------------------------------------------------------------------------------
+# Antigravity & GStack Development Workflow
+# ------------------------------------------------------------------------------
+# .agents/ and AGENTS.md contain repository-level GStack workflows, skills,
+# ethos, and guidelines. They are intentionally TRACKED in version control
+# and must NOT be ignored.
+# (If local, machine-specific scratch files are needed, keep them in local ignored dirs)
