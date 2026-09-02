@@ -24,6 +24,18 @@ export class RoomManager {
     return isNew;
   }
 
+  public joinRooms(roomIds: string[], connectionId: string): string[] {
+    const joined: string[] = [];
+    for (const roomId of roomIds) {
+      const trimmed = roomId.trim();
+      if (trimmed) {
+        this.joinRoom(trimmed, connectionId);
+        joined.push(trimmed);
+      }
+    }
+    return joined;
+  }
+
   public leaveRoom(roomId: string, connectionId: string): boolean {
     const members = this.rooms.get(roomId);
     if (!members) {
