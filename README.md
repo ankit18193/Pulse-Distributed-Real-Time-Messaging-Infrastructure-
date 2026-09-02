@@ -1,0 +1,2 @@
+# Pulse-Distributed-Real-Time-Messaging-Infrastructure-
+ A production-oriented real-time messaging system built with WebSockets, Redis Pub/Sub, and horizontally scalable Pulse instances. Designed to demonstrate persistent connections, room-based messaging, presence, acknowledgements, reconnection, event distribution, and fault-tolerant real-time communication with RouteX integrated as the edge gateway.
