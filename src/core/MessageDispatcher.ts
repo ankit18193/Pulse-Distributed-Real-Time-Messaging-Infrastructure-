@@ -1,24 +1,33 @@
-import crypto from 'crypto';
 import { Connection } from './Connection.js';
 import { ConnectionManager } from './ConnectionManager.js';
 import { RoomManager } from './RoomManager.js';
+import { IdempotencyManager } from './IdempotencyManager.js';
 import { EventValidator } from '../events/EventValidator.js';
 import { PulseEventEnvelope } from '../types/index.js';
+import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
 export class MessageDispatcher {
   private readonly connectionManager: ConnectionManager;
   private readonly roomManager: RoomManager;
+  private readonly idempotencyManager: IdempotencyManager;
   private readonly instanceId: string;
 
   constructor(options: {
     connectionManager: ConnectionManager;
     roomManager: RoomManager;
+    idempotencyManager?: IdempotencyManager;
     instanceId: string;
   }) {
     this.connectionManager = options.connectionManager;
     this.roomManager = options.roomManager;
+    this.idempotencyManager =
+      options.idempotencyManager ?? new IdempotencyManager();
     this.instanceId = options.instanceId;
+  }
+
+  public getIdempotencyManager(): IdempotencyManager {
+    return this.idempotencyManager;
   }
 
   public dispatchRawMessage(
@@ -39,7 +48,7 @@ export class MessageDispatcher {
       });
 
       const errorEnvelope: PulseEventEnvelope = {
-        eventId: crypto.randomUUID(),
+        eventId: generateUUIDv7(),
         type: 'SYS_ERROR',
         timestamp: Date.now(),
         senderId: 'system',
@@ -56,9 +65,41 @@ export class MessageDispatcher {
 
     const envelope = validation.envelope;
 
+    // Optional sequence checking per socket
+    if (envelope.seq !== undefined) {
+      if (envelope.seq <= sender.lastSeenSeq) {
+        logger.warn('Out of order or duplicate sequence number detected', {
+          component: 'MessageDispatcher',
+          connectionId: sender.connectionId,
+          receivedSeq: envelope.seq,
+          lastSeenSeq: sender.lastSeenSeq
+        });
+
+        const errorEnvelope: PulseEventEnvelope = {
+          eventId: generateUUIDv7(),
+          type: 'SYS_ERROR',
+          timestamp: Date.now(),
+          senderId: 'system',
+          correlationId: envelope.correlationId || envelope.eventId,
+          payload: {
+            code: 'INVALID_SEQUENCE_ORDER',
+            message: `Sequence number ${envelope.seq} is out of order (expected > ${sender.lastSeenSeq})`
+          }
+        };
+
+        sender.send(errorEnvelope);
+        return;
+      }
+      sender.lastSeenSeq = envelope.seq;
+    }
+
     switch (envelope.type) {
       case 'ROOM_JOIN':
         this.handleRoomJoin(sender, envelope);
+        break;
+
+      case 'ROOM_BATCH_JOIN':
+        this.handleRoomBatchJoin(sender, envelope);
         break;
 
       case 'ROOM_LEAVE':
@@ -99,7 +140,7 @@ export class MessageDispatcher {
     sender.joinRoom(roomId);
 
     const ack: PulseEventEnvelope = {
-      eventId: crypto.randomUUID(),
+      eventId: generateUUIDv7(),
       type: 'ROOM_JOIN_ACK',
       timestamp: Date.now(),
       senderId: 'system',
@@ -115,6 +156,37 @@ export class MessageDispatcher {
     sender.send(ack);
   }
 
+  private handleRoomBatchJoin(
+    sender: Connection,
+    envelope: PulseEventEnvelope
+  ): void {
+    const rooms = (envelope.payload as { rooms: string[] }).rooms;
+    const joinedRooms: string[] = [];
+
+    for (const roomId of rooms) {
+      const trimmed = roomId.trim();
+      if (trimmed) {
+        this.roomManager.joinRoom(trimmed, sender.connectionId);
+        sender.joinRoom(trimmed);
+        joinedRooms.push(trimmed);
+      }
+    }
+
+    const ack: PulseEventEnvelope = {
+      eventId: generateUUIDv7(),
+      type: 'ROOM_BATCH_JOIN_ACK',
+      timestamp: Date.now(),
+      senderId: 'system',
+      correlationId: envelope.correlationId || envelope.eventId,
+      payload: {
+        joinedRooms,
+        totalJoined: joinedRooms.length
+      }
+    };
+
+    sender.send(ack);
+  }
+
   private handleRoomLeave(
     sender: Connection,
     envelope: PulseEventEnvelope
@@ -124,7 +196,7 @@ export class MessageDispatcher {
     sender.leaveRoom(roomId);
 
     const ack: PulseEventEnvelope = {
-      eventId: crypto.randomUUID(),
+      eventId: generateUUIDv7(),
       type: 'ROOM_LEAVE_ACK',
       timestamp: Date.now(),
       senderId: 'system',
@@ -145,10 +217,10 @@ export class MessageDispatcher {
   ): void {
     const roomId = envelope.target!.roomId!;
 
-    // Enforce room membership authorization
+    // 1. Enforce room membership authorization
     if (!sender.hasRoom(roomId)) {
       const errorAck: PulseEventEnvelope = {
-        eventId: crypto.randomUUID(),
+        eventId: generateUUIDv7(),
         type: 'SYS_ERROR',
         timestamp: Date.now(),
         senderId: 'system',
@@ -163,11 +235,41 @@ export class MessageDispatcher {
       return;
     }
 
+    // 2. Check Idempotency Cache for duplicate retransmissions
+    const idempCheck = this.idempotencyManager.check(
+      envelope.eventId,
+      envelope.payload
+    );
+
+    if (idempCheck.isDuplicate) {
+      if (idempCheck.hasConflict) {
+        const conflictError: PulseEventEnvelope = {
+          eventId: generateUUIDv7(),
+          type: 'SYS_ERROR',
+          timestamp: Date.now(),
+          senderId: 'system',
+          correlationId: envelope.correlationId || envelope.eventId,
+          payload: {
+            code: 'EVENT_ID_CONFLICT',
+            message: `Event ID '${envelope.eventId}' has already been processed with a different payload`
+          }
+        };
+        sender.send(conflictError);
+        return;
+      }
+
+      // Exact duplicate retransmission: do not broadcast; replay cached ACK
+      if (idempCheck.cachedAck) {
+        sender.send(idempCheck.cachedAck);
+        return;
+      }
+    }
+
+    // 3. Broadcast to all other room members (excluding sender)
     const memberConnectionIds = this.roomManager.getRoomConnectionIds(roomId);
     let deliveredCount = 0;
 
     for (const connId of memberConnectionIds) {
-      // Broadcast to other members, do not echo back to the sender
       if (connId !== sender.connectionId) {
         const recipient = this.connectionManager.getConnection(connId);
         if (recipient && recipient.send(envelope)) {
@@ -176,9 +278,9 @@ export class MessageDispatcher {
       }
     }
 
-    // Always send an acknowledgement back to the sender
+    // 4. Create ACK and record in idempotency cache
     const ack: PulseEventEnvelope = {
-      eventId: crypto.randomUUID(),
+      eventId: generateUUIDv7(),
       type: 'DELIVERY_ACK',
       timestamp: Date.now(),
       senderId: 'system',
@@ -191,6 +293,12 @@ export class MessageDispatcher {
       }
     };
 
+    this.idempotencyManager.recordAck(
+      envelope.eventId,
+      ack,
+      envelope.payload
+    );
+
     sender.send(ack);
   }
 
@@ -199,6 +307,37 @@ export class MessageDispatcher {
     envelope: PulseEventEnvelope
   ): void {
     const recipientId = envelope.target!.recipientId!;
+
+    // 1. Check Idempotency Cache
+    const idempCheck = this.idempotencyManager.check(
+      envelope.eventId,
+      envelope.payload
+    );
+
+    if (idempCheck.isDuplicate) {
+      if (idempCheck.hasConflict) {
+        const conflictError: PulseEventEnvelope = {
+          eventId: generateUUIDv7(),
+          type: 'SYS_ERROR',
+          timestamp: Date.now(),
+          senderId: 'system',
+          correlationId: envelope.correlationId || envelope.eventId,
+          payload: {
+            code: 'EVENT_ID_CONFLICT',
+            message: `Event ID '${envelope.eventId}' has already been processed with a different payload`
+          }
+        };
+        sender.send(conflictError);
+        return;
+      }
+
+      if (idempCheck.cachedAck) {
+        sender.send(idempCheck.cachedAck);
+        return;
+      }
+    }
+
+    // 2. Deliver to all recipient active sockets
     const recipientConnections =
       this.connectionManager.getConnectionsByUserId(recipientId);
 
@@ -209,8 +348,9 @@ export class MessageDispatcher {
       }
     }
 
+    // 3. Create ACK and record in idempotency cache
     const ack: PulseEventEnvelope = {
-      eventId: crypto.randomUUID(),
+      eventId: generateUUIDv7(),
       type: 'DELIVERY_ACK',
       timestamp: Date.now(),
       senderId: 'system',
@@ -224,6 +364,12 @@ export class MessageDispatcher {
       }
     };
 
+    this.idempotencyManager.recordAck(
+      envelope.eventId,
+      ack,
+      envelope.payload
+    );
+
     sender.send(ack);
   }
 
@@ -232,7 +378,7 @@ export class MessageDispatcher {
     envelope: PulseEventEnvelope
   ): void {
     const pong: PulseEventEnvelope = {
-      eventId: crypto.randomUUID(),
+      eventId: generateUUIDv7(),
       type: 'SYS_PONG',
       timestamp: Date.now(),
       senderId: 'system',

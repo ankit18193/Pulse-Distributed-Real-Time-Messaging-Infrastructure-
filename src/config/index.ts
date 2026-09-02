@@ -24,6 +24,13 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
   const authSecret =
     overrides.authSecret ?? process.env.AUTH_SECRET ?? 'pulse-dev-secret-key-32chars-min';
 
+  const idempotencyCapacity =
+    overrides.idempotencyCapacity ??
+    parseInt(process.env.IDEMPOTENCY_CAPACITY || '10000', 10);
+  const idempotencyTtlMs =
+    overrides.idempotencyTtlMs ??
+    parseInt(process.env.IDEMPOTENCY_TTL_MS || '60000', 10);
+
   if (isNaN(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid PORT configuration: ${port}`);
   }
@@ -36,6 +43,8 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     heartbeatIntervalMs,
     heartbeatTimeoutMs,
     maxPayloadBytes,
-    authSecret
+    authSecret,
+    idempotencyCapacity,
+    idempotencyTtlMs
   };
 }

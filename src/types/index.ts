@@ -1,6 +1,6 @@
 /**
  * Pulse — Distributed Real-Time Messaging Infrastructure
- * Core Type Definitions (Phase 1)
+ * Core Type Definitions (Phase 2)
  */
 
 export interface PulseConfig {
@@ -12,6 +12,8 @@ export interface PulseConfig {
   heartbeatTimeoutMs: number;
   maxPayloadBytes: number;
   authSecret: string;
+  idempotencyCapacity?: number;
+  idempotencyTtlMs?: number;
 }
 
 export type EventType =
@@ -24,6 +26,8 @@ export type EventType =
   | 'ROOM_JOIN_ACK'
   | 'ROOM_LEAVE'
   | 'ROOM_LEAVE_ACK'
+  | 'ROOM_BATCH_JOIN'
+  | 'ROOM_BATCH_JOIN_ACK'
   | 'ROOM_MESSAGE'
   | 'DIRECT_MESSAGE'
   | 'DELIVERY_ACK';
@@ -38,6 +42,7 @@ export interface PulseEventEnvelope<T = unknown> {
   type: EventType;
   timestamp: number;
   senderId: string;
+  seq?: number;
   target?: EventTarget;
   payload: T;
   correlationId?: string;
@@ -50,6 +55,7 @@ export interface ConnectionContext {
   readonly roles: string[];
   readonly connectedAt: number;
   lastSeenAt: number;
+  lastSeenSeq: number;
 }
 
 export interface PulseErrorPayload {

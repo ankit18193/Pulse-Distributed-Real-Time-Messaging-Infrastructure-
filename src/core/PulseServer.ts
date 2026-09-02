@@ -1,54 +1,66 @@
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import crypto from 'crypto';
 import { PulseConfig, PulseEventEnvelope } from '../types/index.js';
-import { logger } from '../utils/logger.js';
+import { Authenticator, AuthResult } from '../auth/Authenticator.js';
 import { Connection } from './Connection.js';
 import { ConnectionManager } from './ConnectionManager.js';
 import { RoomManager } from './RoomManager.js';
 import { MessageDispatcher } from './MessageDispatcher.js';
 import { HeartbeatManager } from './HeartbeatManager.js';
-import { Authenticator, AuthResult } from '../auth/Authenticator.js';
+import { IdempotencyManager } from './IdempotencyManager.js';
+import { generateUUIDv7 } from '../utils/uuidv7.js';
+import { logger } from '../utils/logger.js';
 
 export interface PulseServerHooks {
   onConnectionAuthenticated?: (connection: Connection) => void;
-  onConnectionClosed?: (connection: Connection, code: number, reason: string) => void;
+  onConnectionClosed?: (
+    connection: Connection,
+    code: number,
+    reason: string
+  ) => void;
 }
 
 export class PulseServer {
   private readonly config: PulseConfig;
+  private readonly authenticator: Authenticator;
   private readonly connectionManager: ConnectionManager;
   private readonly roomManager: RoomManager;
+  private readonly idempotencyManager: IdempotencyManager;
   private readonly dispatcher: MessageDispatcher;
   private readonly heartbeatManager: HeartbeatManager;
-  private readonly authenticator: Authenticator;
   private readonly hooks: PulseServerHooks;
+
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private isRunning: boolean = false;
   private isShuttingDown: boolean = false;
 
-  constructor(config: PulseConfig, hooks: PulseServerHooks = {}) {
+  constructor(
+    config: PulseConfig,
+    hooks: PulseServerHooks = {}
+  ) {
     this.config = config;
     this.hooks = hooks;
+    this.authenticator = new Authenticator(config.authSecret);
     this.connectionManager = new ConnectionManager();
     this.roomManager = new RoomManager();
-    this.authenticator = new Authenticator(this.config.authSecret);
+    this.idempotencyManager = new IdempotencyManager({
+      capacity: config.idempotencyCapacity,
+      ttlMs: config.idempotencyTtlMs
+    });
+
     this.dispatcher = new MessageDispatcher({
       connectionManager: this.connectionManager,
       roomManager: this.roomManager,
-      instanceId: this.config.instanceId
+      idempotencyManager: this.idempotencyManager,
+      instanceId: config.instanceId
     });
+
     this.heartbeatManager = new HeartbeatManager({
       connectionManager: this.connectionManager,
-      intervalMs: this.config.heartbeatIntervalMs,
-      timeoutMs: this.config.heartbeatTimeoutMs
+      intervalMs: config.heartbeatIntervalMs,
+      timeoutMs: config.heartbeatTimeoutMs
     });
-    logger.setInstanceId(this.config.instanceId);
-  }
-
-  public getConfig(): PulseConfig {
-    return this.config;
   }
 
   public getConnectionManager(): ConnectionManager {
@@ -59,7 +71,11 @@ export class PulseServer {
     return this.roomManager;
   }
 
-  public getDispatcher(): MessageDispatcher {
+  public getIdempotencyManager(): IdempotencyManager {
+    return this.idempotencyManager;
+  }
+
+  public getMessageDispatcher(): MessageDispatcher {
     return this.dispatcher;
   }
 
@@ -71,48 +87,30 @@ export class PulseServer {
     return this.authenticator;
   }
 
-  public getHttpServer(): http.Server | null {
-    return this.httpServer;
-  }
-
-  public getWss(): WebSocketServer | null {
-    return this.wss;
-  }
-
   public getActiveConnectionCount(): number {
     return this.connectionManager.getCount();
   }
 
+  public getActiveRoomCount(): number {
+    return this.roomManager.getRoomCount();
+  }
+
+  public isServerRunning(): boolean {
+    return this.isRunning;
+  }
+
   public async start(): Promise<void> {
     if (this.isRunning) {
-      logger.warn('Pulse server start requested but server is already running', {
-        component: 'PulseServer',
-        event: 'ALREADY_RUNNING'
-      });
-      return;
+      throw new Error('PulseServer is already running');
     }
 
-    return new Promise<void>((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       try {
         this.httpServer = http.createServer((req, res) => {
-          if (req.url === '/healthz') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                status: 'OK',
-                instanceId: this.config.instanceId,
-                connections: this.connectionManager.getCount(),
-                uniqueUsers: this.connectionManager.getUserCount(),
-                rooms: this.roomManager.getRoomCount()
-              })
-            );
-            return;
-          }
-
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('Pulse Realtime Infrastructure');
+          this.handleHttpRequest(req, res);
         });
 
+        // Construct WebSocketServer without its own HTTP server port (we manage upgrade manually)
         this.wss = new WebSocketServer({
           noServer: true,
           maxPayload: this.config.maxPayloadBytes
@@ -120,22 +118,20 @@ export class PulseServer {
 
         this.httpServer.on('upgrade', (req: http.IncomingMessage, socket, head) => {
           if (this.isShuttingDown) {
-            socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
-            socket.destroy();
+            socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
             return;
           }
 
           const authResult = this.authenticator.authenticateRequest(req);
           if (!authResult.authenticated) {
             const body = JSON.stringify({ error: authResult.error || 'Unauthorized' });
-            socket.write(
+            socket.end(
               'HTTP/1.1 401 Unauthorized\r\n' +
                 'Content-Type: application/json\r\n' +
                 `Content-Length: ${Buffer.byteLength(body)}\r\n` +
                 'Connection: close\r\n\r\n' +
                 body
             );
-            socket.destroy();
             return;
           }
 
@@ -167,52 +163,81 @@ export class PulseServer {
           this.isRunning = true;
           this.heartbeatManager.start();
 
-          logger.info('Pulse Realtime Engine started successfully', {
+          logger.info('Pulse Realtime Server started successfully', {
             component: 'PulseServer',
             event: 'SERVER_STARTED',
+            instanceId: this.config.instanceId,
             port: this.config.port,
             host: this.config.host,
-            instanceId: this.config.instanceId
+            environment: this.config.nodeEnv
           });
+
           resolve();
         });
-      } catch (err) {
-        reject(err);
+      } catch (error) {
+        reject(error);
       }
     });
+  }
+
+  private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (req.url === '/healthz' || req.url === '/health') {
+      const healthData = {
+        status: this.isShuttingDown ? 'DRAINING' : 'OK',
+        instanceId: this.config.instanceId,
+        timestamp: Date.now(),
+        connections: this.connectionManager.getCount(),
+        rooms: this.roomManager.getRoomCount(),
+        idempotencyCacheSize: this.idempotencyManager.size()
+      };
+
+      res.writeHead(this.isShuttingDown ? 503 : 200, {
+        'Content-Type': 'application/json'
+      });
+      res.end(JSON.stringify(healthData));
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not Found' }));
   }
 
   private handleAuthenticatedConnection(
     socket: WebSocket,
     req: http.IncomingMessage,
-    auth: AuthResult
+    authResult: AuthResult
   ): void {
-    if (this.isShuttingDown) {
-      socket.close(1001, 'Server shutting down');
-      return;
-    }
+    const connectionId = generateUUIDv7();
+    const userId = authResult.userId!;
+    const roles = authResult.roles || ['user'];
+
+    const forwarded = req.headers['x-forwarded-for'];
+    const remoteAddress =
+      (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : undefined) ||
+      req.socket.remoteAddress;
 
     const connection = new Connection({
-      userId: auth.userId!,
-      roles: auth.roles,
       socket,
-      remoteAddress: req.socket.remoteAddress
+      connectionId,
+      userId,
+      roles,
+      remoteAddress
     });
 
     this.connectionManager.addConnection(connection);
 
-    logger.info('Realtime connection authenticated and bound', {
+    logger.info('New authenticated connection established', {
       component: 'PulseServer',
-      event: 'CONNECTION_BOUND',
-      connectionId: connection.connectionId,
-      userId: connection.userId,
-      roles: connection.roles,
-      remoteAddress: connection.remoteAddress
+      event: 'CONNECTION_ESTABLISHED',
+      connectionId,
+      userId,
+      roles,
+      remoteAddress
     });
 
-    // Send connection ack frame to client
+    // Send initial SYS_CONNECT_ACK envelope
     const ackEnvelope: PulseEventEnvelope = {
-      eventId: crypto.randomUUID(),
+      eventId: generateUUIDv7(),
       type: 'SYS_CONNECT_ACK',
       timestamp: Date.now(),
       senderId: 'system',
@@ -228,6 +253,18 @@ export class PulseServer {
     if (this.hooks.onConnectionAuthenticated) {
       this.hooks.onConnectionAuthenticated(connection);
     }
+
+    // Native RFC 6455 transport ping/pong keepalive hooks
+    socket.on('pong', () => {
+      connection.touch();
+    });
+
+    socket.on('ping', () => {
+      connection.touch();
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.pong();
+      }
+    });
 
     // Attach message dispatcher to connection socket
     socket.on('message', (data: Buffer | string) => {
@@ -266,71 +303,82 @@ export class PulseServer {
     });
   }
 
-  public async stop(): Promise<void> {
-    if (!this.isRunning && !this.httpServer) {
+  public async stop(options: { gracePeriodMs?: number } = {}): Promise<void> {
+    if (!this.isRunning) {
       return;
     }
 
     this.isShuttingDown = true;
-    this.heartbeatManager.stop();
+    const gracePeriodMs = options.gracePeriodMs ?? 2000;
 
-    logger.info('Stopping Pulse Realtime Engine...', {
+    logger.info('Initiating graceful shutdown for PulseServer...', {
       component: 'PulseServer',
-      event: 'SERVER_STOPPING',
-      activeConnections: this.connectionManager.getCount()
+      event: 'SHUTDOWN_INITIATED',
+      activeConnections: this.connectionManager.getCount(),
+      gracePeriodMs
     });
 
-    // Notify connected clients of shutdown and close cleanly
-    const conns = this.connectionManager.getAllConnections();
+    // 1. Stop heartbeat manager sweeps
+    this.heartbeatManager.stop();
+
+    // 2. Notify all connected clients with SYS_SHUTDOWN frame
     const shutdownEnvelope: PulseEventEnvelope = {
-      eventId: crypto.randomUUID(),
+      eventId: generateUUIDv7(),
       type: 'SYS_SHUTDOWN',
       timestamp: Date.now(),
       senderId: 'system',
       payload: {
-        message: 'Server shutting down',
+        reason: 'Server shutting down gracefully',
         instanceId: this.config.instanceId
       }
     };
 
-    for (const conn of conns) {
+    const activeConnections = this.connectionManager.getAllConnections();
+    for (const conn of activeConnections) {
       conn.send(shutdownEnvelope);
+      // Close socket with RFC 6455 code 1001 (Going Away)
       conn.close(1001, 'Server shutting down');
     }
 
-    this.connectionManager.clear();
-    this.roomManager.clear();
+    // 3. Close WebSocket server and HTTP server
+    return new Promise((resolve) => {
+      const shutdownTimer = setTimeout(() => {
+        this.cleanupAndFinalize();
+        resolve();
+      }, gracePeriodMs);
 
-    return new Promise<void>((resolve) => {
       if (this.wss) {
         this.wss.close(() => {
           if (this.httpServer) {
             this.httpServer.close(() => {
-              this.isRunning = false;
-              this.isShuttingDown = false;
-              logger.info('Pulse Realtime Engine stopped cleanly', {
-                component: 'PulseServer',
-                event: 'SERVER_STOPPED'
-              });
+              clearTimeout(shutdownTimer);
+              this.cleanupAndFinalize();
               resolve();
             });
           } else {
-            this.isRunning = false;
-            this.isShuttingDown = false;
+            clearTimeout(shutdownTimer);
+            this.cleanupAndFinalize();
             resolve();
           }
         });
-      } else if (this.httpServer) {
-        this.httpServer.close(() => {
-          this.isRunning = false;
-          this.isShuttingDown = false;
-          resolve();
-        });
       } else {
-        this.isRunning = false;
-        this.isShuttingDown = false;
+        clearTimeout(shutdownTimer);
+        this.cleanupAndFinalize();
         resolve();
       }
+    });
+  }
+
+  private cleanupAndFinalize(): void {
+    this.connectionManager.clear();
+    this.roomManager.clear();
+    this.idempotencyManager.clear();
+    this.isRunning = false;
+    this.isShuttingDown = false;
+
+    logger.info('PulseServer shut down complete and resources drained', {
+      component: 'PulseServer',
+      event: 'SHUTDOWN_COMPLETE'
     });
   }
 }

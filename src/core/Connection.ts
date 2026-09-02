@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
-import crypto from 'crypto';
 import { ConnectionContext } from '../types/index.js';
+import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
 export class Connection {
@@ -9,6 +9,7 @@ export class Connection {
   public readonly roles: string[];
   public readonly connectedAt: number;
   public lastSeenAt: number;
+  public lastSeenSeq: number = 0;
   public readonly socket: WebSocket;
   public readonly remoteAddress: string;
   private readonly rooms: Set<string> = new Set();
@@ -21,7 +22,7 @@ export class Connection {
     socket: WebSocket;
     remoteAddress?: string;
   }) {
-    this.connectionId = options.connectionId ?? crypto.randomUUID();
+    this.connectionId = options.connectionId ?? generateUUIDv7();
     this.userId = options.userId;
     this.roles = options.roles ?? ['user'];
     this.socket = options.socket;
@@ -102,7 +103,8 @@ export class Connection {
       userId: this.userId,
       roles: [...this.roles],
       connectedAt: this.connectedAt,
-      lastSeenAt: this.lastSeenAt
+      lastSeenAt: this.lastSeenAt,
+      lastSeenSeq: this.lastSeenSeq
     };
   }
 

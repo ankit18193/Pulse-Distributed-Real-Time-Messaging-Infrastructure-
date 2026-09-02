@@ -1,5 +1,5 @@
-import crypto from 'crypto';
 import { EventType, PulseEventEnvelope } from '../types/index.js';
+import { generateUUIDv7 } from '../utils/uuidv7.js';
 
 export interface ValidationResult<T = unknown> {
   valid: boolean;
@@ -21,10 +21,14 @@ export const VALID_EVENT_TYPES: Set<EventType> = new Set([
   'ROOM_JOIN_ACK',
   'ROOM_LEAVE',
   'ROOM_LEAVE_ACK',
+  'ROOM_BATCH_JOIN',
+  'ROOM_BATCH_JOIN_ACK',
   'ROOM_MESSAGE',
   'DIRECT_MESSAGE',
   'DELIVERY_ACK'
 ]);
+
+export const MAX_BATCH_ROOMS = 50;
 
 export class EventValidator {
   /**
@@ -87,17 +91,33 @@ export class EventValidator {
       };
     }
 
-    // Ensure eventId exists or generate one
+    // Ensure eventId exists or generate a valid monotonic UUIDv7
     const eventId =
       typeof obj.eventId === 'string' && obj.eventId.length > 0
         ? obj.eventId
-        : crypto.randomUUID();
+        : generateUUIDv7();
 
     // Ensure timestamp exists or assign current time
     const timestamp =
       typeof obj.timestamp === 'number' && obj.timestamp > 0
         ? obj.timestamp
         : Date.now();
+
+    // Validate optional sequence number
+    let seq: number | undefined;
+    if (obj.seq !== undefined) {
+      if (typeof obj.seq !== 'number' || !Number.isInteger(obj.seq) || obj.seq < 1) {
+        return {
+          valid: false,
+          error: {
+            code: 'INVALID_SEQUENCE_NUMBER',
+            message: 'Sequence number seq must be a positive integer',
+            correlationId
+          }
+        };
+      }
+      seq = obj.seq;
+    }
 
     // Validate payload
     const payload =
@@ -135,6 +155,45 @@ export class EventValidator {
             correlationId
           }
         };
+      }
+    }
+
+    if (eventType === 'ROOM_BATCH_JOIN') {
+      const rooms = payload.rooms;
+      if (!Array.isArray(rooms) || rooms.length === 0) {
+        return {
+          valid: false,
+          error: {
+            code: 'INVALID_ROOMS_ARRAY',
+            message: "Event 'ROOM_BATCH_JOIN' requires a non-empty 'rooms' array in payload",
+            correlationId
+          }
+        };
+      }
+
+      if (rooms.length > MAX_BATCH_ROOMS) {
+        return {
+          valid: false,
+          error: {
+            code: 'BATCH_SIZE_EXCEEDED',
+            message: `Event 'ROOM_BATCH_JOIN' exceeds maximum batch limit of ${MAX_BATCH_ROOMS} rooms`,
+            correlationId
+          }
+        };
+      }
+
+      // Check all elements are non-empty strings
+      for (const r of rooms) {
+        if (typeof r !== 'string' || r.trim().length === 0) {
+          return {
+            valid: false,
+            error: {
+              code: 'INVALID_ROOM_ID',
+              message: "All entries in 'rooms' array must be non-empty strings",
+              correlationId
+            }
+          };
+        }
       }
     }
 
@@ -179,6 +238,7 @@ export class EventValidator {
       type: eventType,
       timestamp,
       senderId,
+      seq,
       target,
       payload,
       correlationId,
