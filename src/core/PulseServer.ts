@@ -7,6 +7,7 @@ import { Connection } from './Connection.js';
 import { ConnectionManager } from './ConnectionManager.js';
 import { RoomManager } from './RoomManager.js';
 import { MessageDispatcher } from './MessageDispatcher.js';
+import { HeartbeatManager } from './HeartbeatManager.js';
 import { Authenticator, AuthResult } from '../auth/Authenticator.js';
 
 export interface PulseServerHooks {
@@ -19,6 +20,7 @@ export class PulseServer {
   private readonly connectionManager: ConnectionManager;
   private readonly roomManager: RoomManager;
   private readonly dispatcher: MessageDispatcher;
+  private readonly heartbeatManager: HeartbeatManager;
   private readonly authenticator: Authenticator;
   private readonly hooks: PulseServerHooks;
   private httpServer: http.Server | null = null;
@@ -37,6 +39,11 @@ export class PulseServer {
       roomManager: this.roomManager,
       instanceId: this.config.instanceId
     });
+    this.heartbeatManager = new HeartbeatManager({
+      connectionManager: this.connectionManager,
+      intervalMs: this.config.heartbeatIntervalMs,
+      timeoutMs: this.config.heartbeatTimeoutMs
+    });
     logger.setInstanceId(this.config.instanceId);
   }
 
@@ -54,6 +61,10 @@ export class PulseServer {
 
   public getDispatcher(): MessageDispatcher {
     return this.dispatcher;
+  }
+
+  public getHeartbeatManager(): HeartbeatManager {
+    return this.heartbeatManager;
   }
 
   public getAuthenticator(): Authenticator {
@@ -154,6 +165,8 @@ export class PulseServer {
 
         this.httpServer.listen(this.config.port, this.config.host, () => {
           this.isRunning = true;
+          this.heartbeatManager.start();
+
           logger.info('Pulse Realtime Engine started successfully', {
             component: 'PulseServer',
             event: 'SERVER_STARTED',
@@ -259,17 +272,32 @@ export class PulseServer {
     }
 
     this.isShuttingDown = true;
+    this.heartbeatManager.stop();
+
     logger.info('Stopping Pulse Realtime Engine...', {
       component: 'PulseServer',
       event: 'SERVER_STOPPING',
       activeConnections: this.connectionManager.getCount()
     });
 
-    // Cleanly close all managed connections
+    // Notify connected clients of shutdown and close cleanly
     const conns = this.connectionManager.getAllConnections();
+    const shutdownEnvelope: PulseEventEnvelope = {
+      eventId: crypto.randomUUID(),
+      type: 'SYS_SHUTDOWN',
+      timestamp: Date.now(),
+      senderId: 'system',
+      payload: {
+        message: 'Server shutting down',
+        instanceId: this.config.instanceId
+      }
+    };
+
     for (const conn of conns) {
+      conn.send(shutdownEnvelope);
       conn.close(1001, 'Server shutting down');
     }
+
     this.connectionManager.clear();
     this.roomManager.clear();
 
