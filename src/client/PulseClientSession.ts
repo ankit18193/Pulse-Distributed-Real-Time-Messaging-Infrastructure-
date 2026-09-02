@@ -125,6 +125,7 @@ export class PulseClientSession extends EventEmitter {
   public async connect(): Promise<void> {
     this.isExplicitlyClosed = false;
     this.clearReconnectTimer();
+    this.currentSeq = 0;
 
     return new Promise<void>((resolve, reject) => {
       this.setState('CONNECTING');
@@ -281,6 +282,11 @@ export class PulseClientSession extends EventEmitter {
 
     for (const [corrId, entry] of this.inFlightQueue.entries()) {
       clearTimeout(entry.timer);
+      this.currentSeq++;
+      entry.envelope = {
+        ...entry.envelope,
+        seq: this.currentSeq
+      };
       this.transmitFrame(entry.envelope);
       this.armAckTimeout(corrId, entry);
     }
