@@ -1,12 +1,13 @@
-import crypto from 'crypto';
 import { ConnectionManager } from './ConnectionManager.js';
 import { PulseEventEnvelope } from '../types/index.js';
+import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
 export class HeartbeatManager {
   private readonly connectionManager: ConnectionManager;
   private readonly intervalMs: number;
   private readonly timeoutMs: number;
+  private readonly sweepTickMs: number;
   private timer: NodeJS.Timeout | null = null;
   private isRunning: boolean = false;
 
@@ -14,10 +15,19 @@ export class HeartbeatManager {
     connectionManager: ConnectionManager;
     intervalMs: number;
     timeoutMs: number;
+    sweepTickMs?: number;
   }) {
     this.connectionManager = options.connectionManager;
     this.intervalMs = options.intervalMs;
     this.timeoutMs = options.timeoutMs;
+    // Granular sweep tick rate: half of the smallest threshold (min 20ms for tests)
+    this.sweepTickMs =
+      options.sweepTickMs ??
+      Math.max(20, Math.floor(Math.min(this.intervalMs, this.timeoutMs) / 2));
+  }
+
+  public getSweepTickMs(): number {
+    return this.sweepTickMs;
   }
 
   public start(): void {
@@ -28,17 +38,18 @@ export class HeartbeatManager {
     this.isRunning = true;
     this.timer = setInterval(() => {
       this.checkHeartbeats();
-    }, this.intervalMs);
+    }, this.sweepTickMs);
 
     // Allow Node process to exit if only heartbeat timer remains
     if (this.timer.unref) {
       this.timer.unref();
     }
 
-    logger.debug('Heartbeat manager started', {
+    logger.debug('Heartbeat manager started with sub-tick sweep scheduling', {
       component: 'HeartbeatManager',
       intervalMs: this.intervalMs,
-      timeoutMs: this.timeoutMs
+      timeoutMs: this.timeoutMs,
+      sweepTickMs: this.sweepTickMs
     });
   }
 
@@ -79,7 +90,7 @@ export class HeartbeatManager {
       // If connection has been quiet longer than interval, send ping
       if (elapsedSinceLastSeen >= this.intervalMs) {
         const pingEnvelope: PulseEventEnvelope = {
-          eventId: crypto.randomUUID(),
+          eventId: generateUUIDv7(),
           type: 'SYS_PING',
           timestamp: now,
           senderId: 'system',

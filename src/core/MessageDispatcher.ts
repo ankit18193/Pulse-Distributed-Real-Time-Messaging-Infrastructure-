@@ -67,8 +67,8 @@ export class MessageDispatcher {
 
     // Optional sequence checking per socket
     if (envelope.seq !== undefined) {
-      if (envelope.seq <= sender.lastSeenSeq) {
-        logger.warn('Out of order or duplicate sequence number detected', {
+      if (envelope.seq < sender.lastSeenSeq) {
+        logger.warn('Out of order sequence number detected', {
           component: 'MessageDispatcher',
           connectionId: sender.connectionId,
           receivedSeq: envelope.seq,
@@ -260,7 +260,11 @@ export class MessageDispatcher {
 
       // Exact duplicate retransmission: do not broadcast; replay cached ACK
       if (idempCheck.cachedAck) {
-        sender.send(idempCheck.cachedAck);
+        const replayAck: PulseEventEnvelope = {
+          ...idempCheck.cachedAck,
+          correlationId: envelope.correlationId || idempCheck.cachedAck.correlationId
+        };
+        sender.send(replayAck);
         return;
       }
     }
@@ -332,7 +336,11 @@ export class MessageDispatcher {
       }
 
       if (idempCheck.cachedAck) {
-        sender.send(idempCheck.cachedAck);
+        const replayAck: PulseEventEnvelope = {
+          ...idempCheck.cachedAck,
+          correlationId: envelope.correlationId || idempCheck.cachedAck.correlationId
+        };
+        sender.send(replayAck);
         return;
       }
     }

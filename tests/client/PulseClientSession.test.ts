@@ -252,6 +252,7 @@ describe('PulseClientSession & Reliability (Phase 2)', () => {
         type: 'ROOM_MESSAGE',
         timestamp: Date.now(),
         senderId: 'seq_user',
+        seq: 5,
         target: { roomId: 'seq_room' },
         payload: { text: 'Seq 5' },
         correlationId: 'corr-5',

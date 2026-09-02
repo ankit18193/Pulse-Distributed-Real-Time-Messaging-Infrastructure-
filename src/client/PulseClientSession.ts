@@ -52,6 +52,7 @@ export class PulseClientSession extends EventEmitter {
   private lastBackoffDelay: number = 0;
   private reconnectAttempt: number = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private connectionTimeoutTimer: NodeJS.Timeout | null = null;
   private isExplicitlyClosed: boolean = false;
 
   private readonly desiredRooms: Set<string> = new Set();
@@ -140,7 +141,8 @@ export class PulseClientSession extends EventEmitter {
         return reject(err);
       }
 
-      const connectionTimeout = setTimeout(() => {
+      this.clearConnectionTimeout();
+      this.connectionTimeoutTimer = setTimeout(() => {
         if (this.state === 'CONNECTING' || this.state === 'AUTHENTICATING') {
           this.ws?.terminate();
           this.setState('DISCONNECTED');
@@ -148,6 +150,9 @@ export class PulseClientSession extends EventEmitter {
           reject(new Error('Connection attempt timed out'));
         }
       }, 5000);
+      if (this.connectionTimeoutTimer.unref) {
+        this.connectionTimeoutTimer.unref();
+      }
 
       this.ws.on('open', () => {
         this.setState('AUTHENTICATING');
@@ -156,14 +161,14 @@ export class PulseClientSession extends EventEmitter {
       this.ws.on('message', async (data: Buffer | string) => {
         try {
           const envelope = JSON.parse(data.toString()) as PulseEventEnvelope;
-          await this.handleIncomingEnvelope(envelope, resolve, connectionTimeout);
+          await this.handleIncomingEnvelope(envelope, resolve, this.connectionTimeoutTimer || undefined);
         } catch {
           // Ignore parse errors on raw messages
         }
       });
 
       this.ws.on('close', (code, reason) => {
-        clearTimeout(connectionTimeout);
+        this.clearConnectionTimeout();
         const wasConnected = this.state === 'CONNECTED';
         this.setState('DISCONNECTED');
         this.emit('close', { code, reason: reason.toString() });
@@ -174,9 +179,16 @@ export class PulseClientSession extends EventEmitter {
       });
 
       this.ws.on('error', (err) => {
-        this.emit('error', err);
+        if (this.listenerCount('error') > 0) {
+          this.emit('error', err);
+        } else {
+          logger.debug('Client session socket error', {
+            component: 'PulseClientSession',
+            error: err.message
+          });
+        }
         if (this.state === 'CONNECTING') {
-          clearTimeout(connectionTimeout);
+          this.clearConnectionTimeout();
           this.setState('DISCONNECTED');
           this.handleDisconnectOrError();
           reject(err);
@@ -307,17 +319,25 @@ export class PulseClientSession extends EventEmitter {
     }
   }
 
+  private clearConnectionTimeout(): void {
+    if (this.connectionTimeoutTimer) {
+      clearTimeout(this.connectionTimeoutTimer);
+      this.connectionTimeoutTimer = null;
+    }
+  }
+
   /**
    * Sends an envelope over the WebSocket, managing in-flight retry tracking if ackRequired is set.
    */
   public async sendEnvelope(
-    envelopeOptions: Omit<PulseEventEnvelope, 'seq'>
+    envelopeOptions: Omit<PulseEventEnvelope, 'seq'> & { seq?: number }
   ): Promise<PulseEventEnvelope | void> {
     if (this.inFlightQueue.size >= this.queueCapacity) {
       throw new Error('BUFFER_FULL: Client in-flight queue capacity reached');
     }
 
-    this.currentSeq++;
+    this.currentSeq =
+      envelopeOptions.seq !== undefined ? envelopeOptions.seq : this.currentSeq + 1;
     const correlationId = envelopeOptions.correlationId ?? generateUUIDv7();
 
     const envelope: PulseEventEnvelope = {
@@ -464,6 +484,7 @@ export class PulseClientSession extends EventEmitter {
   public async disconnect(): Promise<void> {
     this.isExplicitlyClosed = true;
     this.clearReconnectTimer();
+    this.clearConnectionTimeout();
 
     // Clean up all in-flight timers
     for (const entry of this.inFlightQueue.values()) {

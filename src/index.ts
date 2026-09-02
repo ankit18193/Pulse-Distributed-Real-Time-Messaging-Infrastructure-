@@ -5,14 +5,17 @@ import { logger } from './utils/logger.js';
 export * from './types/index.js';
 export * from './config/index.js';
 export * from './utils/logger.js';
+export * from './utils/uuidv7.js';
 export * from './core/Connection.js';
 export * from './core/ConnectionManager.js';
 export * from './core/RoomManager.js';
 export * from './core/MessageDispatcher.js';
 export * from './core/HeartbeatManager.js';
+export * from './core/IdempotencyManager.js';
 export * from './events/EventValidator.js';
 export * from './auth/Authenticator.js';
 export * from './core/PulseServer.js';
+export * from './client/PulseClientSession.js';
 
 async function bootstrap() {
   const config = loadConfig();
