@@ -5,6 +5,9 @@ import { logger } from './utils/logger.js';
 export * from './types/index.js';
 export * from './config/index.js';
 export * from './utils/logger.js';
+export * from './core/Connection.js';
+export * from './core/ConnectionManager.js';
+export * from './auth/Authenticator.js';
 export * from './core/PulseServer.js';
 
 async function bootstrap() {
@@ -30,7 +33,6 @@ async function bootstrap() {
   }
 }
 
-// Auto-run if invoked directly
 if (process.argv[1] && process.argv[1].endsWith('index.js')) {
   bootstrap();
 }

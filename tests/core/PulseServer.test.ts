@@ -3,19 +3,22 @@ import http from 'http';
 import { PulseServer } from '../../src/core/PulseServer';
 import { loadConfig } from '../../src/config';
 
-describe('PulseServer Core Lifecycle (Commit 1)', () => {
+describe('PulseServer Core Lifecycle (Commit 1 & 2)', () => {
   const testPort = 9181;
   const config = loadConfig({
     port: testPort,
     host: '127.0.0.1',
     nodeEnv: 'test',
-    instanceId: 'test-node-1'
+    instanceId: 'test-node-1',
+    authSecret: 'pulse-test-secret-32-chars-long!'
   });
 
   let server: PulseServer;
+  let testToken: string;
 
   beforeEach(async () => {
     server = new PulseServer(config);
+    testToken = server.getAuthenticator().generateToken({ userId: 'test_user' });
     await server.start();
   });
 
@@ -41,10 +44,10 @@ describe('PulseServer Core Lifecycle (Commit 1)', () => {
     expect(parsed.connections).toBe(0);
   });
 
-  it('accepts incoming WebSocket connection and tracks active connection count', async () => {
+  it('accepts incoming authenticated WebSocket connection and tracks active connection count', async () => {
     expect(server.getActiveConnectionCount()).toBe(0);
 
-    const ws = new WebSocket(`ws://127.0.0.1:${testPort}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${testPort}/ws?token=${testToken}`);
 
     await new Promise<void>((resolve, reject) => {
       ws.on('open', () => resolve());
@@ -59,13 +62,12 @@ describe('PulseServer Core Lifecycle (Commit 1)', () => {
       ws.on('close', () => resolve());
     });
 
-    // Short tick to let close event fire
     await new Promise((r) => setTimeout(r, 50));
     expect(server.getActiveConnectionCount()).toBe(0);
   });
 
   it('shuts down cleanly and terminates remaining active sockets', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${testPort}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${testPort}/ws?token=${testToken}`);
     await new Promise<void>((resolve) => ws.on('open', resolve));
 
     expect(server.getActiveConnectionCount()).toBe(1);
