@@ -7,6 +7,9 @@ export * from './config/index.js';
 export * from './utils/logger.js';
 export * from './core/Connection.js';
 export * from './core/ConnectionManager.js';
+export * from './core/RoomManager.js';
+export * from './core/MessageDispatcher.js';
+export * from './events/EventValidator.js';
 export * from './auth/Authenticator.js';
 export * from './core/PulseServer.js';
 

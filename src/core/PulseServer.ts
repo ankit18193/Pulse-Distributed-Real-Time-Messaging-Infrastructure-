@@ -5,6 +5,8 @@ import { PulseConfig, PulseEventEnvelope } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 import { Connection } from './Connection.js';
 import { ConnectionManager } from './ConnectionManager.js';
+import { RoomManager } from './RoomManager.js';
+import { MessageDispatcher } from './MessageDispatcher.js';
 import { Authenticator, AuthResult } from '../auth/Authenticator.js';
 
 export interface PulseServerHooks {
@@ -15,6 +17,8 @@ export interface PulseServerHooks {
 export class PulseServer {
   private readonly config: PulseConfig;
   private readonly connectionManager: ConnectionManager;
+  private readonly roomManager: RoomManager;
+  private readonly dispatcher: MessageDispatcher;
   private readonly authenticator: Authenticator;
   private readonly hooks: PulseServerHooks;
   private httpServer: http.Server | null = null;
@@ -26,7 +30,13 @@ export class PulseServer {
     this.config = config;
     this.hooks = hooks;
     this.connectionManager = new ConnectionManager();
+    this.roomManager = new RoomManager();
     this.authenticator = new Authenticator(this.config.authSecret);
+    this.dispatcher = new MessageDispatcher({
+      connectionManager: this.connectionManager,
+      roomManager: this.roomManager,
+      instanceId: this.config.instanceId
+    });
     logger.setInstanceId(this.config.instanceId);
   }
 
@@ -36,6 +46,14 @@ export class PulseServer {
 
   public getConnectionManager(): ConnectionManager {
     return this.connectionManager;
+  }
+
+  public getRoomManager(): RoomManager {
+    return this.roomManager;
+  }
+
+  public getDispatcher(): MessageDispatcher {
+    return this.dispatcher;
   }
 
   public getAuthenticator(): Authenticator {
@@ -73,7 +91,8 @@ export class PulseServer {
                 status: 'OK',
                 instanceId: this.config.instanceId,
                 connections: this.connectionManager.getCount(),
-                uniqueUsers: this.connectionManager.getUserCount()
+                uniqueUsers: this.connectionManager.getUserCount(),
+                rooms: this.roomManager.getRoomCount()
               })
             );
             return;
@@ -83,7 +102,6 @@ export class PulseServer {
           res.end('Pulse Realtime Infrastructure');
         });
 
-        // Use noServer mode so we can control the upgrade and authenticate first
         this.wss = new WebSocketServer({
           noServer: true,
           maxPayload: this.config.maxPayloadBytes
@@ -179,7 +197,7 @@ export class PulseServer {
       remoteAddress: connection.remoteAddress
     });
 
-    // Emit connection ack frame to client
+    // Send connection ack frame to client
     const ackEnvelope: PulseEventEnvelope = {
       eventId: crypto.randomUUID(),
       type: 'SYS_CONNECT_ACK',
@@ -198,8 +216,18 @@ export class PulseServer {
       this.hooks.onConnectionAuthenticated(connection);
     }
 
+    // Attach message dispatcher to connection socket
+    socket.on('message', (data: Buffer | string) => {
+      this.dispatcher.dispatchRawMessage(connection, data);
+    });
+
     socket.on('close', (code, reason) => {
       this.connectionManager.removeConnection(connection.connectionId);
+      this.roomManager.removeConnectionFromAllRooms(
+        connection.connectionId,
+        connection.getRooms()
+      );
+
       logger.info('Realtime connection closed and cleaned up', {
         component: 'PulseServer',
         event: 'CONNECTION_CLOSED',
@@ -243,6 +271,7 @@ export class PulseServer {
       conn.close(1001, 'Server shutting down');
     }
     this.connectionManager.clear();
+    this.roomManager.clear();
 
     return new Promise<void>((resolve) => {
       if (this.wss) {
