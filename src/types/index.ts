@@ -14,6 +14,14 @@ export interface PulseConfig {
   authSecret: string;
   idempotencyCapacity?: number;
   idempotencyTtlMs?: number;
+  redisEnabled?: boolean;
+  redisUrl?: string;
+  redisHost?: string;
+  redisPort?: number;
+  redisPassword?: string;
+  redisRetryMaxAttempts?: number;
+  redisRetryInitialDelayMs?: number;
+  redisRetryMaxDelayMs?: number;
 }
 
 export type EventType =

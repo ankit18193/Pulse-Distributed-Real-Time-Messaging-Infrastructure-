@@ -31,8 +31,49 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     overrides.idempotencyTtlMs ??
     parseInt(process.env.IDEMPOTENCY_TTL_MS || '60000', 10);
 
+  // Redis configuration (Phase 3)
+  const redisEnabled =
+    overrides.redisEnabled ??
+    (process.env.REDIS_ENABLED !== undefined
+      ? process.env.REDIS_ENABLED === 'true'
+      : Boolean(process.env.REDIS_URL));
+
+  const redisUrl = overrides.redisUrl ?? process.env.REDIS_URL;
+  const redisHost = overrides.redisHost ?? process.env.REDIS_HOST ?? '127.0.0.1';
+  const redisPort =
+    overrides.redisPort ??
+    parseInt(process.env.REDIS_PORT || '6379', 10);
+  const redisPassword = overrides.redisPassword ?? process.env.REDIS_PASSWORD;
+
+  const redisRetryMaxAttempts =
+    overrides.redisRetryMaxAttempts ??
+    parseInt(process.env.REDIS_RETRY_MAX_ATTEMPTS || '10', 10);
+  const redisRetryInitialDelayMs =
+    overrides.redisRetryInitialDelayMs ??
+    parseInt(process.env.REDIS_RETRY_INITIAL_DELAY_MS || '100', 10);
+  const redisRetryMaxDelayMs =
+    overrides.redisRetryMaxDelayMs ??
+    parseInt(process.env.REDIS_RETRY_MAX_DELAY_MS || '3000', 10);
+
   if (isNaN(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid PORT configuration: ${port}`);
+  }
+
+  if (redisEnabled) {
+    if (isNaN(redisPort) || redisPort < 1 || redisPort > 65535) {
+      throw new Error(`Invalid REDIS_PORT configuration: ${redisPort}`);
+    }
+    if (isNaN(redisRetryMaxAttempts) || redisRetryMaxAttempts < 1) {
+      throw new Error(`Invalid REDIS_RETRY_MAX_ATTEMPTS configuration: ${redisRetryMaxAttempts}`);
+    }
+    if (isNaN(redisRetryInitialDelayMs) || redisRetryInitialDelayMs < 0) {
+      throw new Error(`Invalid REDIS_RETRY_INITIAL_DELAY_MS configuration: ${redisRetryInitialDelayMs}`);
+    }
+    if (isNaN(redisRetryMaxDelayMs) || redisRetryMaxDelayMs < redisRetryInitialDelayMs) {
+      throw new Error(
+        `Invalid REDIS_RETRY_MAX_DELAY_MS configuration (${redisRetryMaxDelayMs}) must be >= initial delay (${redisRetryInitialDelayMs})`
+      );
+    }
   }
 
   return {
@@ -45,6 +86,14 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     maxPayloadBytes,
     authSecret,
     idempotencyCapacity,
-    idempotencyTtlMs
+    idempotencyTtlMs,
+    redisEnabled,
+    redisUrl,
+    redisHost,
+    redisPort,
+    redisPassword,
+    redisRetryMaxAttempts,
+    redisRetryInitialDelayMs,
+    redisRetryMaxDelayMs
   };
 }
