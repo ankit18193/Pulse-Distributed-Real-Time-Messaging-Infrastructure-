@@ -94,7 +94,7 @@ export class MessageDispatcher {
 
     // 2. Self-echo suppression: if originInstanceId matches this node, drop immediately
     if (envelope.originInstanceId === this.instanceId) {
-      this.redisPubSubManager?.getMetrics().recordEchoSuppressed();
+      this.redisPubSubManager?.getMetrics?.().recordEchoSuppressed();
       logger.debug('Suppressed Redis self-echo loopback', {
         component: 'MessageDispatcher',
         event: 'SELF_ECHO_SUPPRESSED',
@@ -113,7 +113,7 @@ export class MessageDispatcher {
     );
 
     if (idempCheck.isDuplicate) {
-      this.redisPubSubManager?.getMetrics().recordDuplicateSuppressed();
+      this.redisPubSubManager?.getMetrics?.().recordDuplicateSuppressed();
       logger.debug('Suppressed duplicate inbound Redis event', {
         component: 'MessageDispatcher',
         event: 'REDIS_DUPLICATE_SUPPRESSED',
@@ -159,7 +159,7 @@ export class MessageDispatcher {
         }
       }
 
-      this.redisPubSubManager?.getMetrics().recordInbound(Date.now() - inboundStartTime);
+      this.redisPubSubManager?.getMetrics?.().recordInbound(Date.now() - inboundStartTime);
 
       logger.debug('Delivered inbound Redis room message to local sockets', {
         component: 'MessageDispatcher',
@@ -191,7 +191,7 @@ export class MessageDispatcher {
         }
       }
 
-      this.redisPubSubManager?.getMetrics().recordInbound(Date.now() - inboundStartTime);
+      this.redisPubSubManager?.getMetrics?.().recordInbound(Date.now() - inboundStartTime);
 
       logger.debug('Delivered inbound Redis direct message to local sockets', {
         component: 'MessageDispatcher',

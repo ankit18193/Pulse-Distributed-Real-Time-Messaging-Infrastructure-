@@ -8,6 +8,8 @@ import { RoomManager } from './RoomManager.js';
 import { MessageDispatcher } from './MessageDispatcher.js';
 import { HeartbeatManager } from './HeartbeatManager.js';
 import { IdempotencyManager } from './IdempotencyManager.js';
+import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
+import { ChannelRegistry } from '../redis/ChannelRegistry.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
@@ -20,6 +22,10 @@ export interface PulseServerHooks {
   ) => void;
 }
 
+export interface PulseServerDependencies {
+  redisPubSubManager?: RedisPubSubManager;
+}
+
 export class PulseServer {
   private readonly config: PulseConfig;
   private readonly authenticator: Authenticator;
@@ -29,6 +35,8 @@ export class PulseServer {
   private readonly dispatcher: MessageDispatcher;
   private readonly heartbeatManager: HeartbeatManager;
   private readonly hooks: PulseServerHooks;
+  private readonly redisPubSubManager?: RedisPubSubManager;
+  private readonly channelRegistry?: ChannelRegistry;
 
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
@@ -37,13 +45,33 @@ export class PulseServer {
 
   constructor(
     config: PulseConfig,
-    hooks: PulseServerHooks = {}
+    hooks: PulseServerHooks = {},
+    deps: PulseServerDependencies = {}
   ) {
     this.config = config;
     this.hooks = hooks;
     this.authenticator = new Authenticator(config.authSecret);
-    this.connectionManager = new ConnectionManager();
-    this.roomManager = new RoomManager();
+
+    if (deps.redisPubSubManager) {
+      this.redisPubSubManager = deps.redisPubSubManager;
+    } else if (config.redisEnabled) {
+      this.redisPubSubManager = new RedisPubSubManager({
+        url: config.redisUrl,
+        host: config.redisHost,
+        port: config.redisPort,
+        password: config.redisPassword,
+        retryMaxAttempts: config.redisRetryMaxAttempts,
+        retryInitialDelayMs: config.redisRetryInitialDelayMs,
+        retryMaxDelayMs: config.redisRetryMaxDelayMs
+      }, config.instanceId);
+    }
+
+    if (this.redisPubSubManager) {
+      this.channelRegistry = new ChannelRegistry(this.redisPubSubManager, config.instanceId);
+    }
+
+    this.connectionManager = new ConnectionManager(this.channelRegistry);
+    this.roomManager = new RoomManager(this.channelRegistry);
     this.idempotencyManager = new IdempotencyManager({
       capacity: config.idempotencyCapacity,
       ttlMs: config.idempotencyTtlMs
@@ -53,6 +81,7 @@ export class PulseServer {
       connectionManager: this.connectionManager,
       roomManager: this.roomManager,
       idempotencyManager: this.idempotencyManager,
+      redisPubSubManager: this.redisPubSubManager,
       instanceId: config.instanceId
     });
 
@@ -61,6 +90,14 @@ export class PulseServer {
       intervalMs: config.heartbeatIntervalMs,
       timeoutMs: config.heartbeatTimeoutMs
     });
+  }
+
+  public getRedisPubSubManager(): RedisPubSubManager | undefined {
+    return this.redisPubSubManager;
+  }
+
+  public getChannelRegistry(): ChannelRegistry | undefined {
+    return this.channelRegistry;
   }
 
   public getConnectionManager(): ConnectionManager {
@@ -102,6 +139,18 @@ export class PulseServer {
   public async start(): Promise<void> {
     if (this.isRunning) {
       throw new Error('PulseServer is already running');
+    }
+
+    if (this.redisPubSubManager && !this.redisPubSubManager.isConnected()) {
+      try {
+        await this.redisPubSubManager.connect();
+      } catch (err) {
+        logger.warn('Initial Redis connection failed; server continuing in isolated local mode', {
+          component: 'PulseServer',
+          instanceId: this.config.instanceId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
     }
 
     return new Promise((resolve, reject) => {
@@ -188,7 +237,14 @@ export class PulseServer {
         timestamp: Date.now(),
         connections: this.connectionManager.getCount(),
         rooms: this.roomManager.getRoomCount(),
-        idempotencyCacheSize: this.idempotencyManager.size()
+        idempotencyCacheSize: this.idempotencyManager.size(),
+        redis: this.redisPubSubManager
+          ? {
+              enabled: true,
+              ...this.redisPubSubManager.getStatus(),
+              metrics: this.redisPubSubManager.getMetricsSnapshot()
+            }
+          : { enabled: false }
       };
 
       res.writeHead(this.isShuttingDown ? 503 : 200, {
@@ -370,6 +426,12 @@ export class PulseServer {
   }
 
   private cleanupAndFinalize(): void {
+    if (this.channelRegistry) {
+      this.channelRegistry.clear().catch(() => {});
+    }
+    if (this.redisPubSubManager) {
+      this.redisPubSubManager.disconnect().catch(() => {});
+    }
     this.connectionManager.clear();
     this.roomManager.clear();
     this.idempotencyManager.clear();

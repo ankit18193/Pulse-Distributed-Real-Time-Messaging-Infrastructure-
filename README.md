@@ -4,15 +4,15 @@ A production-oriented real-time messaging engine built with WebSockets, structur
 
 ---
 
-## Current Status: Phase 2 Complete (Reliability & Connection Management)
+## Current Status: Phase 3 Complete (Distributed Scale-Out with Redis Pub/Sub)
 
 | Phase | Milestone | Status | Description |
 | :--- | :--- | :--- | :--- |
 | **Phase 0** | **Foundation & Architecture Lock** | ✅ Done | Project specification (`PULSE_PROJECT_SPEC.md`), `.gitignore`, GStack Antigravity workflows. |
 | **Phase 1** | **Single-Node Realtime Engine** | ✅ Done | Core WebSocket server, token authentication, connection tracking, rooms, messaging, ACKs, heartbeats, graceful shutdown. |
 | **Phase 2** | **Reliability & Connection Recovery** | ✅ Done | UUIDv7 event IDs, LRU idempotency cache, batch room resubscription, decorrelated jitter backoff, in-flight retry queue, sequence tracking, native ping/pong hooks. |
-| **Phase 3** | **Multi-Node Pulse Topology** | ⏳ Planned | Multi-instance setup, connection ownership boundaries, local-vs-remote dilemma. |
-| **Phase 4** | **Redis Pub/Sub Event Mesh** | ⏳ Planned | Cross-instance event distribution, Redis pub/sub channel routing. |
+| **Phase 3** | **Distributed Scale-Out** | ✅ Done | Multi-instance topology via Redis Pub/Sub, reference-counted channel registry, self-echo loopback suppression, cross-node room/direct messaging, and bounded backpressure. |
+| **Phase 4** | **Redis Pub/Sub Event Mesh** | ⏳ Planned | Extended routing mesh, multi-region propagation, and edge optimization. |
 | **Phase 5** | **Distributed Presence Engine** | ⏳ Planned | Ephemeral presence registry, heartbeat leases, multi-device aggregation. |
 | **Phase 6** | **Observability & Benchmarking** | ⏳ Planned | Prometheus metrics, latency tracking, empirical high-concurrency load testing. |
 | **Phase 7** | **Failure & Resilience Engineering** | ⏳ Planned | Chaos testing, node crash simulation, split-brain isolation, graceful degradation. |
@@ -86,6 +86,60 @@ In Phase 2, Pulse guarantees reliable connection recovery and message deduplicat
 
 ---
 
+## Phase 3 Distributed Scale-Out Architecture
+
+In Phase 3, Pulse scales horizontally across independent node instances using Redis Pub/Sub for ephemeral cross-instance event propagation:
+
+```text
+ Client A (Node 1)                                       Client B (Node 2)
+        │                                                        ▲
+        ▼                                                        │
+┌─────────────────────────┐                            ┌─────────────────────────┐
+│      Pulse Node 1       │                            │      Pulse Node 2       │
+│  (instanceId: node-1)   │                            │  (instanceId: node-2)   │
+│                         │                            │                         │
+│ ┌─────────────────────┐ │                            │ ┌─────────────────────┐ │
+│ │  ConnectionManager  │ │                            │ │  ConnectionManager  │ │
+│ │  • Ephemeral socket │ │                            │ │  • Ephemeral socket │ │
+│ └──────────┬──────────┘ │                            │ └──────────▲──────────┘ │
+│            │            │                            │            │            │
+│ ┌──────────┴──────────┐ │                            │ ┌──────────┴──────────┐ │
+│ │  MessageDispatcher  │ │                            │ │  MessageDispatcher  │ │
+│ │  • Local delivery   │ │                            │ │  • Local delivery   │ │
+│ │  • Suppress self-   │ │                            │ │  • Deduplicate      │ │
+│ │    echo loopback    │ │                            │ │    via idempotency  │ │
+│ └──────────┬──────────┘ │                            │ └──────────▲──────────┘ │
+│            │            │                            │            │            │
+│ ┌──────────▼──────────┐ │                            │ ┌──────────┴──────────┐ │
+│ │  ChannelRegistry    │ │                            │ │  ChannelRegistry    │ │
+│ │  • Ref count (0->1) │ │                            │ │  • Ref count (0->1) │ │
+│ └──────────┬──────────┘ │                            │ └──────────▲──────────┘ │
+│            │            │                            │            │            │
+│ ┌──────────▼──────────┐ │                            │ ┌──────────┴──────────┐ │
+│ │ RedisPubSubManager  │ │                            │ │ RedisPubSubManager  │ │
+│ │ • Dedicated pub/sub │ │                            │ │ • Dedicated pub/sub │ │
+│ │ • Backpressure limit│ │                            │ │ • Auto-resubscribe  │ │
+│ └──────────┬──────────┘ │                            │ └──────────▲──────────┘ │
+└────────────┼────────────┘                            └────────────┼────────────┘
+             │                                                      │
+             │         Redis Pub/Sub Channel Mesh                   │
+             │      (pulse:room:{id} / pulse:user:{id})             │
+             └──────────────────────► ◄─────────────────────────────┘
+```
+
+### Key Distributed Design Principles
+1. **Ephemeral Propagation Semantics**: Redis Pub/Sub provides transient event distribution across nodes. At-least-once reliability is maintained by the client retry state machine; duplicate suppression is enforced by each node's LRU `IdempotencyManager`.
+2. **Dedicated Connections**: Because Redis protocol switches a connection into subscriber-only mode upon `SUBSCRIBE`, `RedisConnectionManager` manages dedicated `publisher` and `subscriber` connections.
+3. **Reference-Counted Dynamic Channel Subscriptions**: Nodes only subscribe to channels for rooms or users with active local connections:
+   - `0 -> 1`: First local socket triggers physical Redis `SUBSCRIBE`.
+   - `1 -> 2+`: Additional local sockets increment reference count with zero redundant Redis calls.
+   - `2+ -> 1`: Leaving sockets decrement reference count while remaining subscribed.
+   - `1 -> 0`: Last local socket leaving triggers physical Redis `UNSUBSCRIBE`.
+4. **Self-Echo Loopback Suppression**: Every distributed envelope is stamped with `originInstanceId`. When a publishing node receives its own broadcast back from Redis, it is immediately dropped before duplicate local delivery can occur.
+5. **Connection-Local Transport Isolation**: Monotonic sequence numbers (`seq`) are strictly connection-local transport counters. `seq` is stripped before Redis publication and never evaluated on distributed events.
+6. **Fault Isolation & Local Degraded Mode**: If Redis becomes unavailable, nodes continue serving all local connections and rooms. Distributed publish errors are caught and logged without crashing the engine. Upon Redis recovery, active channels are re-subscribed automatically.
+7. **Bounded Backpressure & Metrics**: Configurable in-flight publish ceiling (`maxInFlightPublishes: 1000`) prevents memory unbounded growth during broker stalls. Realtime metrics (`redis.publish.*`, `redis.inbound.*`, `redis.echoes.suppressed`, `redis.duplicates.suppressed`) are exposed via `/healthz`.
+
 ## Standard Event Envelope
 
 All client-to-server and server-to-client frames strictly adhere to the Pulse Event Envelope contract:
@@ -157,8 +211,18 @@ npm run dev
 npm start
 ```
 
+### Multi-Node Local Cluster (Docker Compose)
+To start Redis and two independent Pulse nodes (`pulse-node-1` on port 8081, `pulse-node-2` on port 8082):
+
+```bash
+docker compose up --build
+```
+
+- **Health Check Node 1**: `curl http://localhost:8081/healthz`
+- **Health Check Node 2**: `curl http://localhost:8082/healthz`
+
 ### Running Test Suite
-Pulse includes 66 deterministic unit, integration, and end-to-end acceptance tests across 17 test suites:
+Pulse includes a comprehensive test suite covering single-node core engine, reliability reconnects, Redis connection resilience, dynamic channel registry, and multi-node end-to-end propagation:
 
 ```bash
 npm test
