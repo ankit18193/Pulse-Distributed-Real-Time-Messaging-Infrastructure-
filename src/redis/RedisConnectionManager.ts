@@ -116,9 +116,13 @@ export class RedisConnectionManager extends EventEmitter {
 
       try {
         // Attempt clean quit with 2000ms timeout, then force disconnect
-        const quitPromise = client.quit();
-        const timeoutPromise = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 2000));
+        let timer: NodeJS.Timeout;
+        const quitPromise = client.quit().finally(() => clearTimeout(timer));
+        const timeoutPromise = new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), 2000);
+        });
         const res = await Promise.race([quitPromise, timeoutPromise]);
+        clearTimeout(timer!);
 
         if (res === 'timeout') {
           logger.warn(`Redis ${role} quit timed out; forcing disconnect()`, {
