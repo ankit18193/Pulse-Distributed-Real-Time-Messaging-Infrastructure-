@@ -78,6 +78,7 @@ export class MessageDispatcher {
       parsed = rawMessage;
     }
 
+    const inboundStartTime = Date.now();
     // 1. Validate envelope for distributed delivery
     const validation = EventValidator.validateDistributed(parsed);
     if (!validation.valid || !validation.envelope) {
@@ -93,6 +94,7 @@ export class MessageDispatcher {
 
     // 2. Self-echo suppression: if originInstanceId matches this node, drop immediately
     if (envelope.originInstanceId === this.instanceId) {
+      this.redisPubSubManager?.getMetrics().recordEchoSuppressed();
       logger.debug('Suppressed Redis self-echo loopback', {
         component: 'MessageDispatcher',
         event: 'SELF_ECHO_SUPPRESSED',
@@ -111,6 +113,7 @@ export class MessageDispatcher {
     );
 
     if (idempCheck.isDuplicate) {
+      this.redisPubSubManager?.getMetrics().recordDuplicateSuppressed();
       logger.debug('Suppressed duplicate inbound Redis event', {
         component: 'MessageDispatcher',
         event: 'REDIS_DUPLICATE_SUPPRESSED',
@@ -156,6 +159,8 @@ export class MessageDispatcher {
         }
       }
 
+      this.redisPubSubManager?.getMetrics().recordInbound(Date.now() - inboundStartTime);
+
       logger.debug('Delivered inbound Redis room message to local sockets', {
         component: 'MessageDispatcher',
         roomId,
@@ -185,6 +190,8 @@ export class MessageDispatcher {
           delivered++;
         }
       }
+
+      this.redisPubSubManager?.getMetrics().recordInbound(Date.now() - inboundStartTime);
 
       logger.debug('Delivered inbound Redis direct message to local sockets', {
         component: 'MessageDispatcher',
