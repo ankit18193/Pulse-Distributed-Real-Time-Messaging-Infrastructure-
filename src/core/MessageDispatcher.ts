@@ -5,6 +5,7 @@ import { IdempotencyManager } from './IdempotencyManager.js';
 import { EventValidator } from '../events/EventValidator.js';
 import { PulseEventEnvelope } from '../types/index.js';
 import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
+import { extractRoomId, extractUserId } from '../redis/ChannelRegistry.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
@@ -49,19 +50,22 @@ export class MessageDispatcher {
   }
 
   /**
-   * Processes an inbound event received from a Redis Pub/Sub channel.
-   * Suppresses self-echoes (originInstanceId === local instanceId) to prevent duplicate local delivery.
-   * Returns true if event was accepted for processing, false if suppressed/dropped.
+   * Processes an inbound event received from a Redis Pub/Sub channel:
+   * 1. Validates envelope
+   * 2. Suppresses self-echoes (originInstanceId === local instanceId)
+   * 3. Performs local idempotency check & suppresses duplicates
+   * 4. Delivers to local eligible connections (without applying connection-local seq checks)
+   * Returns true if event was processed, false if dropped/suppressed.
    */
   public handleInboundRedisEvent(
     channel: string,
     rawMessage: string | PulseEventEnvelope
   ): boolean {
-    let envelope: PulseEventEnvelope;
+    let parsed: unknown;
 
     if (typeof rawMessage === 'string') {
       try {
-        envelope = JSON.parse(rawMessage) as PulseEventEnvelope;
+        parsed = JSON.parse(rawMessage);
       } catch (err) {
         logger.warn('Failed to parse inbound Redis event JSON', {
           component: 'MessageDispatcher',
@@ -71,10 +75,23 @@ export class MessageDispatcher {
         return false;
       }
     } else {
-      envelope = rawMessage;
+      parsed = rawMessage;
     }
 
-    // 1. Self-echo suppression: if originInstanceId matches this node, drop immediately
+    // 1. Validate envelope for distributed delivery
+    const validation = EventValidator.validateDistributed(parsed);
+    if (!validation.valid || !validation.envelope) {
+      logger.warn('Inbound Redis event failed validation', {
+        component: 'MessageDispatcher',
+        channel,
+        error: validation.error?.message
+      });
+      return false;
+    }
+
+    const envelope = validation.envelope;
+
+    // 2. Self-echo suppression: if originInstanceId matches this node, drop immediately
     if (envelope.originInstanceId === this.instanceId) {
       logger.debug('Suppressed Redis self-echo loopback', {
         component: 'MessageDispatcher',
@@ -85,6 +102,98 @@ export class MessageDispatcher {
         localInstanceId: this.instanceId
       });
       return false;
+    }
+
+    // 3. Local idempotency check: deduplicate inbound Redis events
+    const idempCheck = this.idempotencyManager.check(
+      envelope.eventId,
+      envelope.payload
+    );
+
+    if (idempCheck.isDuplicate) {
+      logger.debug('Suppressed duplicate inbound Redis event', {
+        component: 'MessageDispatcher',
+        event: 'REDIS_DUPLICATE_SUPPRESSED',
+        channel,
+        eventId: envelope.eventId,
+        hasConflict: idempCheck.hasConflict
+      });
+      return false;
+    }
+
+    // Record in local idempotency cache
+    const ack: PulseEventEnvelope = {
+      eventId: generateUUIDv7(),
+      type: 'DELIVERY_ACK',
+      timestamp: Date.now(),
+      senderId: 'system',
+      payload: {
+        targetEventId: envelope.eventId,
+        status: 'DISTRIBUTED_ACCEPTED'
+      }
+    };
+    this.idempotencyManager.recordAck(envelope.eventId, ack, envelope.payload);
+
+    // 4. Deliver only to local eligible connections (no connection-local seq checking)
+    if (envelope.type === 'ROOM_MESSAGE') {
+      const roomId = envelope.target?.roomId || extractRoomId(channel);
+      if (!roomId) {
+        logger.warn('Inbound Redis room event missing target roomId', {
+          component: 'MessageDispatcher',
+          channel,
+          eventId: envelope.eventId
+        });
+        return false;
+      }
+
+      const memberConnectionIds = this.roomManager.getRoomConnectionIds(roomId);
+      let delivered = 0;
+
+      for (const connId of memberConnectionIds) {
+        const recipient = this.connectionManager.getConnection(connId);
+        if (recipient && recipient.send(envelope)) {
+          delivered++;
+        }
+      }
+
+      logger.debug('Delivered inbound Redis room message to local sockets', {
+        component: 'MessageDispatcher',
+        roomId,
+        eventId: envelope.eventId,
+        deliveredCount: delivered
+      });
+
+      return true;
+    }
+
+    if (envelope.type === 'DIRECT_MESSAGE') {
+      const recipientId = envelope.target?.recipientId || extractUserId(channel);
+      if (!recipientId) {
+        logger.warn('Inbound Redis direct event missing target recipientId', {
+          component: 'MessageDispatcher',
+          channel,
+          eventId: envelope.eventId
+        });
+        return false;
+      }
+
+      const recipientConnections = this.connectionManager.getConnectionsByUserId(recipientId);
+      let delivered = 0;
+
+      for (const conn of recipientConnections) {
+        if (conn.send(envelope)) {
+          delivered++;
+        }
+      }
+
+      logger.debug('Delivered inbound Redis direct message to local sockets', {
+        component: 'MessageDispatcher',
+        recipientId,
+        eventId: envelope.eventId,
+        deliveredCount: delivered
+      });
+
+      return true;
     }
 
     return true;
