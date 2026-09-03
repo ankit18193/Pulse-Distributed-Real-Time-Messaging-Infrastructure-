@@ -233,6 +233,22 @@ export class EventValidator {
       }
     }
 
+    // Validate optional originInstanceId
+    let originInstanceId: string | undefined;
+    if (obj.originInstanceId !== undefined) {
+      if (typeof obj.originInstanceId !== 'string' || obj.originInstanceId.trim() === '') {
+        return {
+          valid: false,
+          error: {
+            code: 'INVALID_ORIGIN_INSTANCE_ID',
+            message: 'originInstanceId must be a non-empty string',
+            correlationId
+          }
+        };
+      }
+      originInstanceId = obj.originInstanceId.trim();
+    }
+
     const envelope: PulseEventEnvelope = {
       eventId,
       type: eventType,
@@ -242,12 +258,77 @@ export class EventValidator {
       target,
       payload,
       correlationId,
-      ackRequired: obj.ackRequired === true
+      ackRequired: obj.ackRequired === true,
+      originInstanceId
     };
 
     return {
       valid: true,
       envelope
     };
+  }
+
+  /**
+   * Validates an event envelope received from or sent to Redis Pub/Sub.
+   * Distributed events MUST include an originInstanceId.
+   * Connection-local seq is strictly stripped/ignored to preserve transport isolation.
+   */
+  public static validateDistributed(raw: unknown): ValidationResult {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return {
+        valid: false,
+        error: {
+          code: 'INVALID_DISTRIBUTED_ENVELOPE',
+          message: 'Distributed event must be a JSON object'
+        }
+      };
+    }
+
+    const obj = raw as Record<string, unknown>;
+    const correlationId = typeof obj.correlationId === 'string' ? obj.correlationId : undefined;
+
+    if (!obj.originInstanceId || typeof obj.originInstanceId !== 'string' || obj.originInstanceId.trim() === '') {
+      return {
+        valid: false,
+        error: {
+          code: 'MISSING_ORIGIN_INSTANCE_ID',
+          message: 'Distributed events must include a non-empty originInstanceId',
+          correlationId
+        }
+      };
+    }
+
+    const baseResult = EventValidator.validateIncoming(JSON.stringify(obj), (obj.senderId as string) || 'unknown');
+    if (!baseResult.valid || !baseResult.envelope) {
+      return baseResult;
+    }
+
+    // Strip seq from distributed envelope (seq is connection-local only)
+    const distributedEnvelope: PulseEventEnvelope = {
+      ...baseResult.envelope,
+      originInstanceId: (obj.originInstanceId as string).trim()
+    };
+    delete distributedEnvelope.seq;
+
+    return {
+      valid: true,
+      envelope: distributedEnvelope
+    };
+  }
+
+  /**
+   * Stamps the local instance ID onto an envelope for distributed publishing,
+   * while stripping the connection-local seq so it cannot be misused as distributed ordering.
+   */
+  public static stampForDistribution(
+    envelope: PulseEventEnvelope,
+    instanceId: string
+  ): PulseEventEnvelope {
+    const distributed: PulseEventEnvelope = {
+      ...envelope,
+      originInstanceId: instanceId
+    };
+    delete distributed.seq;
+    return distributed;
   }
 }

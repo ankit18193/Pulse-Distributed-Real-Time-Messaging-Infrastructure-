@@ -55,6 +55,7 @@ export interface PulseEventEnvelope<T = unknown> {
   payload: T;
   correlationId?: string;
   ackRequired?: boolean;
+  originInstanceId?: string;
 }
 
 export interface ConnectionContext {
