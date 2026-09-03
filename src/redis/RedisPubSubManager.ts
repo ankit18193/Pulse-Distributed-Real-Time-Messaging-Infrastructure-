@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { RedisConnectionManager } from './RedisConnectionManager.js';
 import { RedisConnectionOptions, RedisConnectionStatus } from './types.js';
+import { PulseEventEnvelope } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
 export type InboundMessageHandler = (channel: string, message: string) => void;
@@ -38,7 +39,10 @@ export class RedisPubSubManager extends EventEmitter {
     await this.connectionManager.disconnect();
   }
 
-  public async publish(channel: string, message: string | Record<string, unknown>): Promise<number> {
+  public async publish(
+    channel: string,
+    message: string | PulseEventEnvelope | Record<string, unknown>
+  ): Promise<number> {
     if (!this.connectionManager.isConnected()) {
       throw new Error(`Cannot publish to channel "${channel}": Redis is not connected.`);
     }

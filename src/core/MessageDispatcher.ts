@@ -4,6 +4,7 @@ import { RoomManager } from './RoomManager.js';
 import { IdempotencyManager } from './IdempotencyManager.js';
 import { EventValidator } from '../events/EventValidator.js';
 import { PulseEventEnvelope } from '../types/index.js';
+import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
@@ -11,23 +12,82 @@ export class MessageDispatcher {
   private readonly connectionManager: ConnectionManager;
   private readonly roomManager: RoomManager;
   private readonly idempotencyManager: IdempotencyManager;
+  private readonly redisPubSubManager?: RedisPubSubManager;
   private readonly instanceId: string;
 
   constructor(options: {
     connectionManager: ConnectionManager;
     roomManager: RoomManager;
     idempotencyManager?: IdempotencyManager;
+    redisPubSubManager?: RedisPubSubManager;
     instanceId: string;
   }) {
     this.connectionManager = options.connectionManager;
     this.roomManager = options.roomManager;
     this.idempotencyManager =
       options.idempotencyManager ?? new IdempotencyManager();
+    this.redisPubSubManager = options.redisPubSubManager;
     this.instanceId = options.instanceId;
+
+    if (this.redisPubSubManager) {
+      this.redisPubSubManager.onMessage((channel, message) => {
+        this.handleInboundRedisEvent(channel, message);
+      });
+    }
   }
 
   public getIdempotencyManager(): IdempotencyManager {
     return this.idempotencyManager;
+  }
+
+  public getRedisPubSubManager(): RedisPubSubManager | undefined {
+    return this.redisPubSubManager;
+  }
+
+  public getInstanceId(): string {
+    return this.instanceId;
+  }
+
+  /**
+   * Processes an inbound event received from a Redis Pub/Sub channel.
+   * Suppresses self-echoes (originInstanceId === local instanceId) to prevent duplicate local delivery.
+   * Returns true if event was accepted for processing, false if suppressed/dropped.
+   */
+  public handleInboundRedisEvent(
+    channel: string,
+    rawMessage: string | PulseEventEnvelope
+  ): boolean {
+    let envelope: PulseEventEnvelope;
+
+    if (typeof rawMessage === 'string') {
+      try {
+        envelope = JSON.parse(rawMessage) as PulseEventEnvelope;
+      } catch (err) {
+        logger.warn('Failed to parse inbound Redis event JSON', {
+          component: 'MessageDispatcher',
+          channel,
+          error: err instanceof Error ? err.message : String(err)
+        });
+        return false;
+      }
+    } else {
+      envelope = rawMessage;
+    }
+
+    // 1. Self-echo suppression: if originInstanceId matches this node, drop immediately
+    if (envelope.originInstanceId === this.instanceId) {
+      logger.debug('Suppressed Redis self-echo loopback', {
+        component: 'MessageDispatcher',
+        event: 'SELF_ECHO_SUPPRESSED',
+        channel,
+        eventId: envelope.eventId,
+        originInstanceId: envelope.originInstanceId,
+        localInstanceId: this.instanceId
+      });
+      return false;
+    }
+
+    return true;
   }
 
   public dispatchRawMessage(
@@ -322,6 +382,21 @@ export class MessageDispatcher {
     );
 
     sender.send(ack);
+
+    // 5. Publish to Redis for remote instances (if connected)
+    if (this.redisPubSubManager && this.redisPubSubManager.isConnected()) {
+      const distributedEnvelope = EventValidator.stampForDistribution(envelope, this.instanceId);
+      this.redisPubSubManager
+        .publish(`pulse:room:${roomId}`, distributedEnvelope)
+        .catch((err) => {
+          logger.warn('Failed to publish room message to Redis', {
+            component: 'MessageDispatcher',
+            roomId,
+            eventId: envelope.eventId,
+            error: err instanceof Error ? err.message : String(err)
+          });
+        });
+    }
   }
 
   private handleDirectMessage(
@@ -369,6 +444,21 @@ export class MessageDispatcher {
     );
 
     sender.send(ack);
+
+    // 4. Publish to Redis for remote instances (if connected)
+    if (this.redisPubSubManager && this.redisPubSubManager.isConnected()) {
+      const distributedEnvelope = EventValidator.stampForDistribution(envelope, this.instanceId);
+      this.redisPubSubManager
+        .publish(`pulse:user:${recipientId}`, distributedEnvelope)
+        .catch((err) => {
+          logger.warn('Failed to publish direct message to Redis', {
+            component: 'MessageDispatcher',
+            recipientId,
+            eventId: envelope.eventId,
+            error: err instanceof Error ? err.message : String(err)
+          });
+        });
+    }
   }
 
   private handlePing(
