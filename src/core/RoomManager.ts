@@ -1,7 +1,21 @@
 import { logger } from '../utils/logger.js';
+import type { ChannelRegistry } from '../redis/ChannelRegistry.js';
 
 export class RoomManager {
   private readonly rooms: Map<string, Set<string>> = new Map();
+  private channelRegistry?: ChannelRegistry;
+
+  constructor(channelRegistry?: ChannelRegistry) {
+    this.channelRegistry = channelRegistry;
+  }
+
+  public setChannelRegistry(channelRegistry: ChannelRegistry): void {
+    this.channelRegistry = channelRegistry;
+  }
+
+  public getChannelRegistry(): ChannelRegistry | undefined {
+    return this.channelRegistry;
+  }
 
   public joinRoom(roomId: string, connectionId: string): boolean {
     let members = this.rooms.get(roomId);
@@ -12,6 +26,17 @@ export class RoomManager {
 
     const isNew = !members.has(connectionId);
     members.add(connectionId);
+
+    if (isNew && this.channelRegistry) {
+      this.channelRegistry.subscribeRoom(roomId).catch((err) => {
+        logger.warn('Failed to subscribe room in Redis channel registry', {
+          component: 'RoomManager',
+          roomId,
+          connectionId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      });
+    }
 
     logger.debug('Connection joined room', {
       component: 'RoomManager',
@@ -43,6 +68,17 @@ export class RoomManager {
     }
 
     const removed = members.delete(connectionId);
+    if (removed && this.channelRegistry) {
+      this.channelRegistry.unsubscribeRoom(roomId).catch((err) => {
+        logger.warn('Failed to unsubscribe room in Redis channel registry', {
+          component: 'RoomManager',
+          roomId,
+          connectionId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      });
+    }
+
     if (members.size === 0) {
       this.rooms.delete(roomId);
       logger.debug('Room pruned after last member left', {
@@ -101,10 +137,8 @@ export class RoomManager {
     // Safety sweep: also check any other room where connectionId might exist
     for (const [roomId, members] of this.rooms.entries()) {
       if (members.has(connectionId)) {
-        members.delete(connectionId);
-        removedRooms.push(roomId);
-        if (members.size === 0) {
-          this.rooms.delete(roomId);
+        if (this.leaveRoom(roomId, connectionId)) {
+          removedRooms.push(roomId);
         }
       }
     }
