@@ -1,9 +1,23 @@
 import { Connection } from './Connection.js';
 import { logger } from '../utils/logger.js';
+import type { ChannelRegistry } from '../redis/ChannelRegistry.js';
 
 export class ConnectionManager {
   private readonly connections: Map<string, Connection> = new Map();
   private readonly userConnections: Map<string, Set<string>> = new Map();
+  private channelRegistry?: ChannelRegistry;
+
+  constructor(channelRegistry?: ChannelRegistry) {
+    this.channelRegistry = channelRegistry;
+  }
+
+  public setChannelRegistry(channelRegistry: ChannelRegistry): void {
+    this.channelRegistry = channelRegistry;
+  }
+
+  public getChannelRegistry(): ChannelRegistry | undefined {
+    return this.channelRegistry;
+  }
 
   public addConnection(connection: Connection): void {
     this.connections.set(connection.connectionId, connection);
@@ -14,6 +28,17 @@ export class ConnectionManager {
       this.userConnections.set(connection.userId, userConns);
     }
     userConns.add(connection.connectionId);
+
+    if (this.channelRegistry) {
+      this.channelRegistry.subscribeUser(connection.userId).catch((err) => {
+        logger.warn('Failed to subscribe user channel in Redis channel registry', {
+          component: 'ConnectionManager',
+          userId: connection.userId,
+          connectionId: connection.connectionId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      });
+    }
 
     logger.debug('Registered connection in ConnectionManager', {
       component: 'ConnectionManager',
@@ -39,6 +64,17 @@ export class ConnectionManager {
       if (userConns.size === 0) {
         this.userConnections.delete(connection.userId);
       }
+    }
+
+    if (this.channelRegistry) {
+      this.channelRegistry.unsubscribeUser(connection.userId).catch((err) => {
+        logger.warn('Failed to unsubscribe user channel in Redis channel registry', {
+          component: 'ConnectionManager',
+          userId: connection.userId,
+          connectionId: connection.connectionId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      });
     }
 
     connection.markCleanedUp();
