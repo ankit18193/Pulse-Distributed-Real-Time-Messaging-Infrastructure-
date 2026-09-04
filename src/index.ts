@@ -16,6 +16,15 @@ export * from './events/EventValidator.js';
 export * from './auth/Authenticator.js';
 export * from './core/PulseServer.js';
 export * from './client/PulseClientSession.js';
+export * from './redis/types.js';
+export * from './redis/RedisConnectionManager.js';
+export * from './redis/RedisPubSubManager.js';
+export * from './redis/ChannelRegistry.js';
+export { CHANNEL_PRESENCE_EVENTS } from './redis/ChannelRegistry.js';
+export * from './redis/PresenceLuaScripts.js';
+export * from './redis/PresenceEventTracker.js';
+export * from './redis/PresenceManager.js';
+export * from './redis/RedisMetrics.js';
 
 async function bootstrap() {
   const config = loadConfig();
