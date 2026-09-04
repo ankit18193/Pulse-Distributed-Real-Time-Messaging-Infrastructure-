@@ -19,6 +19,7 @@ export interface PresenceManagerOptions {
   keySafeguardTtlSec?: number;
   maxTrackedUsers?: number;
   pubSubManager?: RedisPubSubManager;
+  roomsProvider?: (userId: string) => string[];
 }
 
 export interface PresenceRegistrationResult {
@@ -46,6 +47,7 @@ export class PresenceManager {
   private readonly localConnections: Map<string, { userId: string; connectionId: string }> = new Map();
   private activeConnectionProvider?: () => Array<{ userId: string; connectionId: string }>;
   private pubSubManager?: RedisPubSubManager;
+  private roomsProvider?: (userId: string) => string[];
   private renewalTimer?: NodeJS.Timeout;
   private isFlushing: boolean = false;
 
@@ -61,6 +63,7 @@ export class PresenceManager {
     this.keySafeguardTtlSec = options.keySafeguardTtlSec ?? DEFAULT_KEY_SAFEGUARD_TTL_SEC;
     this.eventTracker = new PresenceEventTracker({ maxUsers: options.maxTrackedUsers });
     this.pubSubManager = options.pubSubManager;
+    this.roomsProvider = options.roomsProvider;
   }
 
   public getInstanceId(): string {
@@ -77,6 +80,14 @@ export class PresenceManager {
 
   public setPubSubManager(pubSubManager: RedisPubSubManager): void {
     this.pubSubManager = pubSubManager;
+  }
+
+  public getRoomsProvider(): ((userId: string) => string[]) | undefined {
+    return this.roomsProvider;
+  }
+
+  public setRoomsProvider(provider: (userId: string) => string[]): void {
+    this.roomsProvider = provider;
   }
 
   public getEventTracker(): PresenceEventTracker {
@@ -103,7 +114,8 @@ export class PresenceManager {
     userId: string,
     connectionId: string,
     customExpireAtMs?: number,
-    customNowMs?: number
+    customNowMs?: number,
+    customRooms?: string[]
   ): Promise<PresenceRegistrationResult> {
     if (!userId || !connectionId) {
       throw new Error('userId and connectionId are required for presence registration');
@@ -137,7 +149,8 @@ export class PresenceManager {
       });
 
       if (transition === 1) {
-        await this.publishPresenceUpdate(userId, 'ONLINE', activeConnections);
+        const rooms = customRooms ?? (this.roomsProvider ? this.roomsProvider(userId) : undefined);
+        await this.publishPresenceUpdate(userId, 'ONLINE', activeConnections, rooms);
       }
 
       return {
@@ -165,7 +178,8 @@ export class PresenceManager {
   public async removeConnection(
     userId: string,
     connectionId: string,
-    customNowMs?: number
+    customNowMs?: number,
+    customRooms?: string[]
   ): Promise<PresenceRemovalResult> {
     if (!userId || !connectionId) {
       throw new Error('userId and connectionId are required for presence removal');
@@ -197,7 +211,8 @@ export class PresenceManager {
       });
 
       if (transition === 1) {
-        await this.publishPresenceUpdate(userId, 'OFFLINE', activeConnections);
+        const rooms = customRooms ?? (this.roomsProvider ? this.roomsProvider(userId) : undefined);
+        await this.publishPresenceUpdate(userId, 'OFFLINE', activeConnections, rooms);
       }
 
       return {

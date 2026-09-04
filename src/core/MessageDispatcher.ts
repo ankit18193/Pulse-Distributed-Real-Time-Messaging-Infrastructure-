@@ -248,6 +248,13 @@ export class MessageDispatcher extends EventEmitter {
         this.presenceManager.recordPresenceEvent(payload.userId, envelope.timestamp);
       }
 
+      // Room-scoped fan-out: deliver only to local clients sharing a room with target user
+      const deliveredCount = this.deliverRoomScopedPresence(
+        payload.userId,
+        envelope,
+        payload.rooms
+      );
+
       this.redisPubSubManager?.getMetrics?.().recordInbound(Date.now() - inboundStartTime);
 
       this.emit('presence_update', envelope);
@@ -257,13 +264,71 @@ export class MessageDispatcher extends EventEmitter {
         userId: payload.userId,
         status: payload.status,
         activeConnections: payload.activeConnections,
-        originInstanceId: envelope.originInstanceId
+        originInstanceId: envelope.originInstanceId,
+        deliveredCount
       });
 
       return true;
     }
 
     return true;
+  }
+
+  /**
+   * Delivers an inbound PRESENCE_UPDATE event only to local clients that share
+   * at least one room with the target user.
+   * Clients with no shared rooms do not receive the event (no global broadcast).
+   * Multi-device and multi-room connections are deduplicated so each connection
+   * receives at most one logical presence frame.
+   * Unauthenticated connections never receive presence events.
+   */
+  public deliverRoomScopedPresence(
+    userId: string,
+    envelope: PulseEventEnvelope,
+    hintRooms?: string[]
+  ): number {
+    const targetConnectionIds = new Set<string>();
+
+    // 1. If hint rooms are provided in the payload, fan out to local members of those rooms
+    if (hintRooms && hintRooms.length > 0) {
+      for (const roomId of hintRooms) {
+        const memberIds = this.roomManager.getRoomConnectionIds(roomId);
+        for (const id of memberIds) {
+          targetConnectionIds.add(id);
+        }
+      }
+    } else {
+      // 2. Fallback: inspect local rooms where target user is present
+      for (const roomId of this.roomManager.getAllRoomIds()) {
+        const memberConnIds = this.roomManager.getRoomConnectionIds(roomId);
+        const hasTargetUser = memberConnIds.some((connId) => {
+          const conn = this.connectionManager.getConnection(connId);
+          return conn && conn.userId === userId;
+        });
+
+        if (hasTargetUser) {
+          for (const id of memberConnIds) {
+            targetConnectionIds.add(id);
+          }
+        }
+      }
+    }
+
+    let delivered = 0;
+    for (const connId of targetConnectionIds) {
+      const conn = this.connectionManager.getConnection(connId);
+      if (conn) {
+        // Enforce: unauthenticated connections must never participate in presence
+        if (!conn.userId || conn.userId === 'anonymous') {
+          continue;
+        }
+        if (conn.send(envelope)) {
+          delivered++;
+        }
+      }
+    }
+
+    return delivered;
   }
 
   public dispatchRawMessage(
