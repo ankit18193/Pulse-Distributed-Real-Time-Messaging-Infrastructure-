@@ -3,6 +3,7 @@ import { logger } from '../utils/logger.js';
 
 export const CHANNEL_PREFIX_ROOM = 'pulse:room:';
 export const CHANNEL_PREFIX_USER = 'pulse:user:';
+export const CHANNEL_PRESENCE_EVENTS = 'pulse:presence:events';
 
 export function getRoomChannel(roomId: string): string {
   if (!roomId || typeof roomId !== 'string' || roomId.trim() === '') {
@@ -24,6 +25,10 @@ export function isRoomChannel(channel: string): boolean {
 
 export function isUserChannel(channel: string): boolean {
   return channel.startsWith(CHANNEL_PREFIX_USER);
+}
+
+export function isPresenceChannel(channel: string): boolean {
+  return channel === CHANNEL_PRESENCE_EVENTS;
 }
 
 export function extractRoomId(channel: string): string | null {
@@ -82,6 +87,29 @@ export class ChannelRegistry {
   public async unsubscribeUser(userId: string): Promise<boolean> {
     const channel = getUserChannel(userId);
     return this.decrementSubscription(channel);
+  }
+
+  /**
+   * Increment reference count for the cluster-wide presence events channel.
+   * If ref count transitions from 0 -> 1, issues physical Redis SUBSCRIBE.
+   */
+  public async subscribePresence(): Promise<boolean> {
+    return this.incrementSubscription(CHANNEL_PRESENCE_EVENTS);
+  }
+
+  /**
+   * Decrement reference count for the cluster-wide presence events channel.
+   * If ref count transitions from 1 -> 0, issues physical Redis UNSUBSCRIBE.
+   */
+  public async unsubscribePresence(): Promise<boolean> {
+    return this.decrementSubscription(CHANNEL_PRESENCE_EVENTS);
+  }
+
+  /**
+   * Checks if cluster-wide presence events channel is currently subscribed.
+   */
+  public isPresenceSubscribed(): boolean {
+    return (this.channelRefCounts.get(CHANNEL_PRESENCE_EVENTS) ?? 0) > 0;
   }
 
   /**

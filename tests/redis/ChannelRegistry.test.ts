@@ -1,9 +1,12 @@
+import { describe, test, expect, beforeEach, vi } from 'vitest';
 import {
   ChannelRegistry,
   getRoomChannel,
   getUserChannel,
   isRoomChannel,
   isUserChannel,
+  isPresenceChannel,
+  CHANNEL_PRESENCE_EVENTS,
   extractRoomId,
   extractUserId
 } from '../../src/redis/ChannelRegistry.js';
@@ -13,13 +16,13 @@ import RedisMock from 'ioredis-mock';
 describe('ChannelRegistry & Reference-Counted Subscriptions', () => {
   let mockPubSubManager: any;
   let registry: ChannelRegistry;
-  let subscribeSpy: jest.SpyInstance;
-  let unsubscribeSpy: jest.SpyInstance;
+  let subscribeSpy: any;
+  let unsubscribeSpy: any;
 
   beforeEach(() => {
     mockPubSubManager = {
-      subscribe: jest.fn().mockResolvedValue(undefined),
-      unsubscribe: jest.fn().mockResolvedValue(undefined)
+      subscribe: vi.fn().mockResolvedValue(undefined),
+      unsubscribe: vi.fn().mockResolvedValue(undefined)
     };
 
     subscribeSpy = mockPubSubManager.subscribe;
@@ -51,6 +54,10 @@ describe('ChannelRegistry & Reference-Counted Subscriptions', () => {
 
       expect(extractUserId('pulse:user:bob')).toBe('bob');
       expect(extractUserId('pulse:room:general')).toBeNull();
+
+      expect(isPresenceChannel('pulse:presence:events')).toBe(true);
+      expect(isPresenceChannel('pulse:room:general')).toBe(false);
+      expect(CHANNEL_PRESENCE_EVENTS).toBe('pulse:presence:events');
     });
   });
 
@@ -160,6 +167,36 @@ describe('ChannelRegistry & Reference-Counted Subscriptions', () => {
       const retrySuccess = await registry.subscribeRoom('flaky_room');
       expect(retrySuccess).toBe(true);
       expect(registry.getRefCount(channel)).toBe(1);
+    });
+
+    test('proves exact lifecycle transitions for cluster presence channel', async () => {
+      expect(registry.isPresenceSubscribed()).toBe(false);
+
+      // 0 -> 1: First subscriber
+      const res1 = await registry.subscribePresence();
+      expect(res1).toBe(true);
+      expect(subscribeSpy).toHaveBeenCalledWith('pulse:presence:events');
+      expect(registry.isPresenceSubscribed()).toBe(true);
+      expect(registry.getRefCount('pulse:presence:events')).toBe(1);
+
+      // 1 -> 2: Second subscriber
+      const res2 = await registry.subscribePresence();
+      expect(res2).toBe(false);
+      expect(subscribeSpy).toHaveBeenCalledTimes(1);
+      expect(registry.getRefCount('pulse:presence:events')).toBe(2);
+
+      // 2 -> 1: First unsubscriber
+      const unsub1 = await registry.unsubscribePresence();
+      expect(unsub1).toBe(false);
+      expect(unsubscribeSpy).not.toHaveBeenCalled();
+      expect(registry.getRefCount('pulse:presence:events')).toBe(1);
+
+      // 1 -> 0: Final unsubscriber
+      const unsub2 = await registry.unsubscribePresence();
+      expect(unsub2).toBe(true);
+      expect(unsubscribeSpy).toHaveBeenCalledWith('pulse:presence:events');
+      expect(registry.isPresenceSubscribed()).toBe(false);
+      expect(registry.getRefCount('pulse:presence:events')).toBe(0);
     });
   });
 });

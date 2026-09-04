@@ -5,9 +5,12 @@ import { RedisMetrics, RedisMetricsSnapshot } from './RedisMetrics.js';
 import { PulseEventEnvelope } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
+export const CHANNEL_PRESENCE_EVENTS = 'pulse:presence:events';
+
 export type InboundMessageHandler = (channel: string, message: string) => void;
 
 export class RedisPubSubManager extends EventEmitter {
+  public static readonly PRESENCE_CHANNEL = CHANNEL_PRESENCE_EVENTS;
   private readonly connectionManager: RedisConnectionManager;
   private readonly instanceId: string;
   private readonly subscribedChannels: Set<string> = new Set<string>();
@@ -165,6 +168,24 @@ export class RedisPubSubManager extends EventEmitter {
         throw error;
       }
     }
+  }
+
+  public async subscribePresence(): Promise<void> {
+    await this.subscribe(CHANNEL_PRESENCE_EVENTS);
+  }
+
+  public async unsubscribePresence(): Promise<void> {
+    await this.unsubscribe(CHANNEL_PRESENCE_EVENTS);
+  }
+
+  public isSubscribedToPresence(): boolean {
+    return this.subscribedChannels.has(CHANNEL_PRESENCE_EVENTS);
+  }
+
+  public async publishPresence(
+    message: string | PulseEventEnvelope | Record<string, unknown>
+  ): Promise<number> {
+    return this.publish(CHANNEL_PRESENCE_EVENTS, message);
   }
 
   public onMessage(handler: InboundMessageHandler): void {
