@@ -325,7 +325,14 @@ export class PulseServer {
               ...this.redisPubSubManager.getStatus(),
               metrics: this.redisPubSubManager.getMetricsSnapshot()
             }
-          : { enabled: false }
+          : { enabled: false },
+        presence: this.presenceManager
+          ? {
+              enabled: true,
+              mode: isRedisDegraded ? 'degraded-local-only' : 'distributed',
+              metrics: this.presenceManager.getMetricsSnapshot()
+            }
+          : { enabled: false, mode: 'disabled' }
       };
 
       res.writeHead(statusCode, {

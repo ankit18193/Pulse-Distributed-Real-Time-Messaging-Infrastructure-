@@ -25,6 +25,15 @@ export interface PresenceManagerOptions {
   localRosterProvider?: (roomId: string) => string[];
 }
 
+export interface PresenceMetricsSnapshot {
+  'presence.users.online': number;
+  'presence.connections.active': number;
+  'presence.events.published': number;
+  'presence.events.received': number;
+  'presence.prune.latency.ms': number;
+  'presence.lease.renewals': number;
+}
+
 export interface PresenceRegistrationResult {
   isOnlineTransition: boolean;
   activeConnections: number;
@@ -54,6 +63,10 @@ export class PresenceManager {
   private localRosterProvider?: (roomId: string) => string[];
   private renewalTimer?: NodeJS.Timeout;
   private isFlushing: boolean = false;
+  private eventsPublished: number = 0;
+  private eventsReceived: number = 0;
+  private pruneLatencyMs: number = 0;
+  private totalLeaseRenewals: number = 0;
 
   constructor(
     redisClient: Redis,
@@ -143,6 +156,7 @@ export class PresenceManager {
       const activeConnections = await this.getUserConnectionCount(userId, now);
 
       this.localConnections.set(connectionId, { userId, connectionId });
+      this.updateActiveMetrics();
 
       logger.info('Presence connection registered', {
         component: 'PresenceManager',
@@ -191,6 +205,7 @@ export class PresenceManager {
     }
 
     this.localConnections.delete(connectionId);
+    this.updateActiveMetrics();
 
     const now = customNowMs ?? Date.now();
 
@@ -270,6 +285,8 @@ export class PresenceManager {
 
     try {
       await this.pubSubManager.publishPresence(envelope);
+      this.eventsPublished++;
+      this.pubSubManager.getMetrics().recordPresenceEventPublished();
       logger.info('Published distributed presence event', {
         component: 'PresenceManager',
         instanceId: this.instanceId,
@@ -359,9 +376,16 @@ export class PresenceManager {
     userId: string,
     nowMs: number = Date.now()
   ): Promise<number> {
+    const start = Date.now();
     try {
       const userKey = getPresenceUserKey(userId);
-      return await this.redisClient.zremrangebyscore(userKey, '-inf', nowMs);
+      const pruned = await this.redisClient.zremrangebyscore(userKey, '-inf', nowMs);
+      const latency = Date.now() - start;
+      this.pruneLatencyMs = latency;
+      if (this.pubSubManager) {
+        this.pubSubManager.getMetrics().recordPresencePruneLatency(latency);
+      }
+      return pruned;
     } catch (err) {
       logger.warn('Failed to prune expired presence leases', {
         component: 'PresenceManager',
@@ -419,6 +443,11 @@ export class PresenceManager {
       }
 
       await pipeline.exec();
+
+      this.totalLeaseRenewals += activeConnections.length;
+      if (this.pubSubManager) {
+        this.pubSubManager.getMetrics().recordPresenceLeaseRenewals(activeConnections.length);
+      }
 
       logger.debug('Flushed presence lease renewals via pipeline', {
         component: 'PresenceManager',
@@ -567,7 +596,13 @@ export class PresenceManager {
 
     try {
       const now = Date.now();
+      const pruneStart = Date.now();
       const onlineUserIds = await executeGetRoomPresenceRoster(this.redisClient, trimmedRoom, now);
+      const pruneLatency = Date.now() - pruneStart;
+      this.pruneLatencyMs = pruneLatency;
+      if (this.pubSubManager) {
+        this.pubSubManager.getMetrics().recordPresencePruneLatency(pruneLatency);
+      }
       const uniqueSorted = Array.from(new Set(onlineUserIds)).sort();
       return {
         roomId: trimmedRoom,
@@ -595,5 +630,37 @@ export class PresenceManager {
 
   public setLocalRosterProvider(provider: (roomId: string) => string[]): void {
     this.localRosterProvider = provider;
+  }
+
+  public recordInboundEvent(): void {
+    this.eventsReceived++;
+    if (this.pubSubManager) {
+      this.pubSubManager.getMetrics().recordPresenceEventReceived();
+    }
+  }
+
+  private updateActiveMetrics(): void {
+    const userIds = new Set<string>();
+    for (const { userId } of this.localConnections.values()) {
+      userIds.add(userId);
+    }
+    if (this.pubSubManager) {
+      this.pubSubManager.getMetrics().setPresenceCounts(userIds.size, this.localConnections.size);
+    }
+  }
+
+  public getMetricsSnapshot(): PresenceMetricsSnapshot {
+    const userIds = new Set<string>();
+    for (const { userId } of this.localConnections.values()) {
+      userIds.add(userId);
+    }
+    return {
+      'presence.users.online': userIds.size,
+      'presence.connections.active': this.localConnections.size,
+      'presence.events.published': this.eventsPublished,
+      'presence.events.received': this.eventsReceived,
+      'presence.prune.latency.ms': this.pruneLatencyMs,
+      'presence.lease.renewals': this.totalLeaseRenewals
+    };
   }
 }

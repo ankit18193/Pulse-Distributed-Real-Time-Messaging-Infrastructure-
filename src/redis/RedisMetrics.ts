@@ -11,6 +11,12 @@ export interface RedisMetricsSnapshot {
   'redis.duplicates.suppressed': number;
   'redis.channels.active': number;
   'redis.connection.state': string;
+  'presence.users.online': number;
+  'presence.connections.active': number;
+  'presence.events.published': number;
+  'presence.events.received': number;
+  'presence.prune.latency.ms': number;
+  'presence.lease.renewals': number;
 }
 
 export class RedisMetrics {
@@ -28,6 +34,13 @@ export class RedisMetrics {
   private duplicatesSuppressed = 0;
   private channelsActive = 0;
   private connectionState = 'disconnected';
+
+  private presenceUsersOnline = 0;
+  private presenceConnectionsActive = 0;
+  private presenceEventsPublished = 0;
+  private presenceEventsReceived = 0;
+  private presencePruneLatencyMs = 0;
+  private presenceLeaseRenewals = 0;
 
   public recordPublishStart(): void {
     this.inFlightPublishes++;
@@ -78,6 +91,29 @@ export class RedisMetrics {
     return this.inFlightPublishes;
   }
 
+  public recordPresenceEventPublished(): void {
+    this.presenceEventsPublished++;
+  }
+
+  public recordPresenceEventReceived(): void {
+    this.presenceEventsReceived++;
+  }
+
+  public recordPresencePruneLatency(durationMs: number): void {
+    if (durationMs > this.presencePruneLatencyMs) {
+      this.presencePruneLatencyMs = durationMs;
+    }
+  }
+
+  public recordPresenceLeaseRenewals(count: number): void {
+    this.presenceLeaseRenewals += count;
+  }
+
+  public setPresenceCounts(users: number, connections: number): void {
+    this.presenceUsersOnline = users;
+    this.presenceConnectionsActive = connections;
+  }
+
   public getSnapshot(): RedisMetricsSnapshot {
     return {
       'redis.publish.count': this.publishCount,
@@ -97,7 +133,13 @@ export class RedisMetrics {
       'redis.echoes.suppressed': this.echoesSuppressed,
       'redis.duplicates.suppressed': this.duplicatesSuppressed,
       'redis.channels.active': this.channelsActive,
-      'redis.connection.state': this.connectionState
+      'redis.connection.state': this.connectionState,
+      'presence.users.online': this.presenceUsersOnline,
+      'presence.connections.active': this.presenceConnectionsActive,
+      'presence.events.published': this.presenceEventsPublished,
+      'presence.events.received': this.presenceEventsReceived,
+      'presence.prune.latency.ms': this.presencePruneLatencyMs,
+      'presence.lease.renewals': this.presenceLeaseRenewals
     };
   }
 
@@ -114,5 +156,11 @@ export class RedisMetrics {
     this.duplicatesSuppressed = 0;
     this.channelsActive = 0;
     this.connectionState = 'disconnected';
+    this.presenceUsersOnline = 0;
+    this.presenceConnectionsActive = 0;
+    this.presenceEventsPublished = 0;
+    this.presenceEventsReceived = 0;
+    this.presencePruneLatencyMs = 0;
+    this.presenceLeaseRenewals = 0;
   }
 }

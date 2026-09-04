@@ -274,6 +274,7 @@ export class MessageDispatcher extends EventEmitter {
         payload.rooms
       );
 
+      this.presenceManager?.recordInboundEvent();
       this.redisPubSubManager?.getMetrics?.().recordInbound(Date.now() - inboundStartTime);
 
       this.emit('presence_update', envelope);
