@@ -2,13 +2,15 @@ import type { Redis } from 'ioredis';
 import {
   executeRegisterPresence,
   executeRemovePresence,
+  executeGetRoomPresenceRoster,
   getPresenceUserKey,
+  getRoomMembersKey,
   formatPresenceMember,
   parsePresenceMember,
   DEFAULT_KEY_SAFEGUARD_TTL_SEC
 } from './PresenceLuaScripts.js';
 import { PresenceEventTracker } from './PresenceEventTracker.js';
-import type { PresenceStatus, PresenceUpdatePayload, PulseEventEnvelope } from '../types/index.js';
+import type { PresenceStatus, PresenceUpdatePayload, PulseEventEnvelope, RoomRosterPayload } from '../types/index.js';
 import type { RedisPubSubManager } from './RedisPubSubManager.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
@@ -20,6 +22,7 @@ export interface PresenceManagerOptions {
   maxTrackedUsers?: number;
   pubSubManager?: RedisPubSubManager;
   roomsProvider?: (userId: string) => string[];
+  localRosterProvider?: (roomId: string) => string[];
 }
 
 export interface PresenceRegistrationResult {
@@ -48,6 +51,7 @@ export class PresenceManager {
   private activeConnectionProvider?: () => Array<{ userId: string; connectionId: string }>;
   private pubSubManager?: RedisPubSubManager;
   private roomsProvider?: (userId: string) => string[];
+  private localRosterProvider?: (roomId: string) => string[];
   private renewalTimer?: NodeJS.Timeout;
   private isFlushing: boolean = false;
 
@@ -64,6 +68,7 @@ export class PresenceManager {
     this.eventTracker = new PresenceEventTracker({ maxUsers: options.maxTrackedUsers });
     this.pubSubManager = options.pubSubManager;
     this.roomsProvider = options.roomsProvider;
+    this.localRosterProvider = options.localRosterProvider;
   }
 
   public getInstanceId(): string {
@@ -486,5 +491,109 @@ export class PresenceManager {
 
   public isRenewalLoopRunning(): boolean {
     return this.renewalTimer !== undefined;
+  }
+
+  /**
+   * Adds a user to the Redis cluster room membership set:
+   * pulse:room:{roomId}:members -> SADD userId
+   *
+   * Idempotent; multi-device users appear only once in the Redis SET.
+   */
+  public async addRoomMember(roomId: string, userId: string): Promise<void> {
+    const trimmedRoom = roomId.trim();
+    const trimmedUser = userId.trim();
+    if (!trimmedRoom || !trimmedUser) return;
+
+    try {
+      const roomKey = getRoomMembersKey(trimmedRoom);
+      await this.redisClient.sadd(roomKey, trimmedUser);
+      logger.debug('Added user to room in Redis presence set', {
+        component: 'PresenceManager',
+        roomId: trimmedRoom,
+        userId: trimmedUser
+      });
+    } catch (err) {
+      logger.warn('Failed to add user to room membership set in Redis', {
+        component: 'PresenceManager',
+        roomId: trimmedRoom,
+        userId: trimmedUser,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+
+  /**
+   * Removes a user from the Redis cluster room membership set:
+   * pulse:room:{roomId}:members -> SREM userId
+   */
+  public async removeRoomMember(roomId: string, userId: string): Promise<void> {
+    const trimmedRoom = roomId.trim();
+    const trimmedUser = userId.trim();
+    if (!trimmedRoom || !trimmedUser) return;
+
+    try {
+      const roomKey = getRoomMembersKey(trimmedRoom);
+      await this.redisClient.srem(roomKey, trimmedUser);
+      logger.debug('Removed user from room in Redis presence set', {
+        component: 'PresenceManager',
+        roomId: trimmedRoom,
+        userId: trimmedUser
+      });
+    } catch (err) {
+      logger.warn('Failed to remove user from room membership set in Redis', {
+        component: 'PresenceManager',
+        roomId: trimmedRoom,
+        userId: trimmedUser,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+
+  /**
+   * Obtains a room presence roster snapshot:
+   * 1. Reads room membership from pulse:room:{roomId}:members
+   * 2. Inspects each user's presence ZSET
+   * 3. Prunes expired leases
+   * 4. Returns currently online user IDs
+   * 5. Automatically prunes stale offline users from the room set
+   *
+   * If Redis is unavailable, safely falls back to local room roster (fail-open).
+   */
+  public async getRoomRoster(roomId: string): Promise<RoomRosterPayload> {
+    const trimmedRoom = roomId.trim();
+    if (!trimmedRoom) {
+      return { roomId: '', members: [], totalOnline: 0 };
+    }
+
+    try {
+      const now = Date.now();
+      const onlineUserIds = await executeGetRoomPresenceRoster(this.redisClient, trimmedRoom, now);
+      const uniqueSorted = Array.from(new Set(onlineUserIds)).sort();
+      return {
+        roomId: trimmedRoom,
+        members: uniqueSorted,
+        totalOnline: uniqueSorted.length
+      };
+    } catch (err) {
+      logger.warn('Failed to get room presence roster from Redis, falling back to local roster', {
+        component: 'PresenceManager',
+        roomId: trimmedRoom,
+        error: err instanceof Error ? err.message : String(err)
+      });
+
+      const fallbackMembers = this.localRosterProvider
+        ? this.localRosterProvider(trimmedRoom)
+        : [];
+      const uniqueFallback = Array.from(new Set(fallbackMembers)).sort();
+      return {
+        roomId: trimmedRoom,
+        members: uniqueFallback,
+        totalOnline: uniqueFallback.length
+      };
+    }
+  }
+
+  public setLocalRosterProvider(provider: (roomId: string) => string[]): void {
+    this.localRosterProvider = provider;
   }
 }

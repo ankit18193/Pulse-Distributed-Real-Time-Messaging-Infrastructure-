@@ -4,7 +4,7 @@ import { ConnectionManager } from './ConnectionManager.js';
 import { RoomManager } from './RoomManager.js';
 import { IdempotencyManager } from './IdempotencyManager.js';
 import { EventValidator } from '../events/EventValidator.js';
-import { PulseEventEnvelope, PresenceUpdatePayload } from '../types/index.js';
+import { PulseEventEnvelope, PresenceUpdatePayload, RoomRosterPayload } from '../types/index.js';
 import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
 import type { PresenceManager } from '../redis/PresenceManager.js';
 import { extractRoomId, extractUserId } from '../redis/ChannelRegistry.js';
@@ -38,11 +38,29 @@ export class MessageDispatcher extends EventEmitter {
     this.presenceManager = options.presenceManager;
     this.instanceId = options.instanceId;
 
+    if (this.presenceManager) {
+      this.wireLocalRosterProvider(this.presenceManager);
+    }
+
     if (this.redisPubSubManager) {
       this.redisPubSubManager.onMessage((channel, message) => {
         this.handleInboundRedisEvent(channel, message);
       });
     }
+  }
+
+  private wireLocalRosterProvider(pm: PresenceManager): void {
+    pm.setLocalRosterProvider((roomId: string) => {
+      const connIds = this.roomManager.getRoomConnectionIds(roomId);
+      const userIds = new Set<string>();
+      for (const cid of connIds) {
+        const c = this.connectionManager.getConnection(cid);
+        if (c && c.userId) {
+          userIds.add(c.userId);
+        }
+      }
+      return Array.from(userIds);
+    });
   }
 
   public getPresenceManager(): PresenceManager | undefined {
@@ -51,6 +69,7 @@ export class MessageDispatcher extends EventEmitter {
 
   public setPresenceManager(presenceManager: PresenceManager): void {
     this.presenceManager = presenceManager;
+    this.wireLocalRosterProvider(presenceManager);
   }
 
   public onPresenceUpdate(handler: (envelope: PulseEventEnvelope) => void): void {
@@ -331,10 +350,10 @@ export class MessageDispatcher extends EventEmitter {
     return delivered;
   }
 
-  public dispatchRawMessage(
+  public async dispatchRawMessage(
     sender: Connection,
     rawData: string | Buffer
-  ): void {
+  ): Promise<void> {
     sender.touch();
 
     const validation = EventValidator.validateIncoming(rawData, sender.userId);
@@ -431,15 +450,15 @@ export class MessageDispatcher extends EventEmitter {
 
     switch (envelope.type) {
       case 'ROOM_JOIN':
-        this.handleRoomJoin(sender, envelope);
+        await this.handleRoomJoin(sender, envelope);
         break;
 
       case 'ROOM_BATCH_JOIN':
-        this.handleRoomBatchJoin(sender, envelope);
+        await this.handleRoomBatchJoin(sender, envelope);
         break;
 
       case 'ROOM_LEAVE':
-        this.handleRoomLeave(sender, envelope);
+        await this.handleRoomLeave(sender, envelope);
         break;
 
       case 'ROOM_MESSAGE':
@@ -467,16 +486,45 @@ export class MessageDispatcher extends EventEmitter {
     }
   }
 
-  private handleRoomJoin(
+  private async handleRoomJoin(
     sender: Connection,
     envelope: PulseEventEnvelope
-  ): void {
+  ): Promise<void> {
     const roomId = envelope.target!.roomId!;
     this.roomManager.joinRoom(roomId, sender.connectionId);
     sender.joinRoom(roomId);
 
+    if (this.presenceManager && sender.userId) {
+      await this.presenceManager.addRoomMember(roomId, sender.userId);
+    }
+
     if (envelope.seq !== undefined) {
       sender.lastSeenSeq = envelope.seq;
+    }
+
+    let roster: RoomRosterPayload | undefined;
+    if (this.presenceManager) {
+      try {
+        roster = await this.presenceManager.getRoomRoster(roomId);
+      } catch (err) {
+        logger.warn('Failed to obtain room roster', {
+          component: 'MessageDispatcher',
+          roomId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+
+    const ackPayload: Record<string, unknown> = {
+      roomId,
+      status: 'JOINED',
+      memberCount: this.roomManager.getConnectionCountInRoom(roomId)
+    };
+
+    if (roster) {
+      ackPayload.members = roster.members;
+      ackPayload.totalOnline = roster.totalOnline;
+      ackPayload.roster = roster;
     }
 
     const ack: PulseEventEnvelope = {
@@ -486,20 +534,16 @@ export class MessageDispatcher extends EventEmitter {
       senderId: 'system',
       correlationId: envelope.correlationId || envelope.eventId,
       target: { roomId },
-      payload: {
-        roomId,
-        status: 'JOINED',
-        memberCount: this.roomManager.getConnectionCountInRoom(roomId)
-      }
+      payload: ackPayload
     };
 
     sender.send(ack);
   }
 
-  private handleRoomBatchJoin(
+  private async handleRoomBatchJoin(
     sender: Connection,
     envelope: PulseEventEnvelope
-  ): void {
+  ): Promise<void> {
     const rooms = (envelope.payload as { rooms: string[] }).rooms;
     const joinedRooms: string[] = [];
 
@@ -509,6 +553,10 @@ export class MessageDispatcher extends EventEmitter {
         this.roomManager.joinRoom(trimmed, sender.connectionId);
         sender.joinRoom(trimmed);
         joinedRooms.push(trimmed);
+
+        if (this.presenceManager && sender.userId) {
+          await this.presenceManager.addRoomMember(trimmed, sender.userId);
+        }
       }
     }
 
@@ -531,13 +579,24 @@ export class MessageDispatcher extends EventEmitter {
     sender.send(ack);
   }
 
-  private handleRoomLeave(
+  private async handleRoomLeave(
     sender: Connection,
     envelope: PulseEventEnvelope
-  ): void {
+  ): Promise<void> {
     const roomId = envelope.target!.roomId!;
     this.roomManager.leaveRoom(roomId, sender.connectionId);
     sender.leaveRoom(roomId);
+
+    // Multi-device membership: check if user has other connections in this room locally
+    if (this.presenceManager && sender.userId) {
+      const userConns = this.connectionManager.getConnectionsByUserId(sender.userId);
+      const hasOther = userConns.some(
+        (c) => c.connectionId !== sender.connectionId && c.hasRoom(roomId)
+      );
+      if (!hasOther) {
+        await this.presenceManager.removeRoomMember(roomId, sender.userId);
+      }
+    }
 
     if (envelope.seq !== undefined) {
       sender.lastSeenSeq = envelope.seq;
