@@ -1,4 +1,3 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PresenceManager } from '../../src/redis/PresenceManager.js';
 import RedisMock from 'ioredis-mock';
 
@@ -172,9 +171,9 @@ describe('PresenceManager Multi-Device & Lifecycle Aggregation', () => {
 
     test('handles Redis failure gracefully by returning safe fallbacks', async () => {
       const brokenRedis: any = {
-        eval: vi.fn().mockRejectedValue(new Error('Redis connection lost')),
-        zremrangebyscore: vi.fn().mockRejectedValue(new Error('Redis connection lost')),
-        zcard: vi.fn().mockRejectedValue(new Error('Redis connection lost'))
+        eval: jest.fn().mockRejectedValue(new Error('Redis connection lost')),
+        zremrangebyscore: jest.fn().mockRejectedValue(new Error('Redis connection lost')),
+        zcard: jest.fn().mockRejectedValue(new Error('Redis connection lost'))
       };
 
       const failingManager = new PresenceManager(brokenRedis, 'pulse-node-failing');

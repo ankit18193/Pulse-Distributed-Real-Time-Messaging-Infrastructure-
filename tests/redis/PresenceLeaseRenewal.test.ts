@@ -1,4 +1,3 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import RedisMock from 'ioredis-mock';
 import { PresenceManager } from '../../src/redis/PresenceManager.js';
 import { getPresenceUserKey, formatPresenceMember } from '../../src/redis/PresenceLuaScripts.js';
@@ -22,7 +21,7 @@ describe('Presence Lease Renewal Lifecycle', () => {
   afterEach(async () => {
     presenceManager.stopRenewalLoop();
     await redis.flushall();
-    vi.restoreAllMocks();
+    jest.restoreAllMocks();
   });
 
   it('starts and stops the renewal timer correctly', () => {
@@ -105,7 +104,7 @@ describe('Presence Lease Renewal Lifecycle', () => {
   });
 
   it('does not write to Redis when there are 0 active local connections', async () => {
-    const pipelineSpy = vi.spyOn(redis, 'pipeline');
+    const pipelineSpy = jest.spyOn(redis, 'pipeline');
 
     const renewedCount = await presenceManager.flushLeaseRenewals(400000);
     expect(renewedCount).toBe(0);
@@ -138,12 +137,12 @@ describe('Presence Lease Renewal Lifecycle', () => {
     const mockSocket: any = {
       readyState: 1, // WebSocket.OPEN
       bufferedAmount: 0,
-      send: vi.fn(),
-      close: vi.fn()
+      send: jest.fn(),
+      close: jest.fn()
     };
 
-    const redisEvalSpy = vi.spyOn(redis, 'eval');
-    const redisZaddSpy = vi.spyOn(redis, 'zadd');
+    const redisEvalSpy = jest.spyOn(redis, 'eval');
+    const redisZaddSpy = jest.spyOn(redis, 'zadd');
 
     const connection = new Connection({
       connectionId: 'conn-hb-1',

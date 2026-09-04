@@ -1,4 +1,3 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import RedisMock from 'ioredis-mock';
 import { PresenceManager } from '../../src/redis/PresenceManager.js';
 import { MessageDispatcher } from '../../src/core/MessageDispatcher.js';
@@ -70,7 +69,7 @@ describe('Distributed Presence Event Propagation', () => {
     });
 
     // Mock publishPresence spy on Node A
-    const publishSpyA = vi.spyOn(pubSubNodeA, 'publishPresence');
+    const publishSpyA = jest.spyOn(pubSubNodeA, 'publishPresence');
 
     // Register user Alice on Node A (0 -> 1)
     const result = await presenceNodeA.registerConnection('alice', 'conn-a-1');
@@ -123,7 +122,7 @@ describe('Distributed Presence Event Propagation', () => {
   });
 
   it('does NOT publish presence updates for intermediate transitions (1 -> 2 or 2 -> 1)', async () => {
-    const publishSpyA = vi.spyOn(pubSubNodeA, 'publishPresence');
+    const publishSpyA = jest.spyOn(pubSubNodeA, 'publishPresence');
 
     // 0 -> 1: should publish ONLINE
     await presenceNodeA.registerConnection('bob', 'conn-b-1');

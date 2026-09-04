@@ -1,4 +1,3 @@
-import { describe, it, expect, beforeEach } from 'vitest';
 import RedisMock from 'ioredis-mock';
 import { PresenceEventTracker } from '../../src/redis/PresenceEventTracker.js';
 import { PresenceManager } from '../../src/redis/PresenceManager.js';

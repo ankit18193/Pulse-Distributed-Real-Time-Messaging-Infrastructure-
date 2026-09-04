@@ -1,4 +1,3 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RedisPubSubManager, CHANNEL_PRESENCE_EVENTS } from '../../src/redis/RedisPubSubManager.js';
 import { RedisConnectionManager } from '../../src/redis/RedisConnectionManager.js';
 import RedisMock from 'ioredis-mock';
@@ -39,7 +38,7 @@ describe('RedisPubSubManager', () => {
   });
 
   test('subscribes and tracks active channels', async () => {
-    const subSpy = vi.spyOn(mockSubscriber, 'subscribe');
+    const subSpy = jest.spyOn(mockSubscriber, 'subscribe');
 
     await pubSubManager.subscribe('pulse:room:dev');
     expect(pubSubManager.getSubscribedChannels()).toEqual(['pulse:room:dev']);
@@ -52,7 +51,7 @@ describe('RedisPubSubManager', () => {
   });
 
   test('unsubscribes and removes from tracking set', async () => {
-    const unsubSpy = vi.spyOn(mockSubscriber, 'unsubscribe');
+    const unsubSpy = jest.spyOn(mockSubscriber, 'unsubscribe');
 
     await pubSubManager.subscribe('pulse:room:dev');
     await pubSubManager.unsubscribe('pulse:room:dev');
@@ -67,7 +66,7 @@ describe('RedisPubSubManager', () => {
   });
 
   test('publishes payload to Redis channel', async () => {
-    const pubSpy = vi.spyOn(mockPublisher, 'publish').mockResolvedValue(2);
+    const pubSpy = jest.spyOn(mockPublisher, 'publish').mockResolvedValue(2);
 
     const envelope = {
       eventId: 'evt-123',
@@ -118,7 +117,7 @@ describe('RedisPubSubManager', () => {
     await pubSubManager.subscribe('pulse:room:one');
     await pubSubManager.subscribe('pulse:room:two');
 
-    const subSpy = vi.spyOn(mockSubscriber, 'subscribe');
+    const subSpy = jest.spyOn(mockSubscriber, 'subscribe');
 
     // Trigger connectionManager 'connected' event
     connectionManager.emit('connected');
@@ -160,7 +159,7 @@ describe('RedisPubSubManager', () => {
     expect(pubSubManager.isSubscribedToPresence()).toBe(true);
     expect(pubSubManager.getSubscribedChannels()).toContain('pulse:presence:events');
 
-    const pubSpy = vi.spyOn(mockPublisher, 'publish').mockResolvedValue(3);
+    const pubSpy = jest.spyOn(mockPublisher, 'publish').mockResolvedValue(3);
     const presenceEnvelope = {
       eventId: 'evt-pres-1',
       type: 'PRESENCE_UPDATE',

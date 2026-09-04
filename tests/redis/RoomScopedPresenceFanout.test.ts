@@ -1,4 +1,3 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MessageDispatcher } from '../../src/core/MessageDispatcher.js';
 import { ConnectionManager } from '../../src/core/ConnectionManager.js';
 import { RoomManager } from '../../src/core/RoomManager.js';
@@ -14,8 +13,8 @@ describe('Room-Scoped Presence Fanout', () => {
   const createMockSocket = () => ({
     readyState: 1, // OPEN
     bufferedAmount: 0,
-    send: vi.fn(),
-    close: vi.fn()
+    send: jest.fn(),
+    close: jest.fn()
   });
 
   beforeEach(() => {

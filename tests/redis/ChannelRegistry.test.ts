@@ -1,4 +1,3 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest';
 import {
   ChannelRegistry,
   getRoomChannel,
@@ -21,8 +20,8 @@ describe('ChannelRegistry & Reference-Counted Subscriptions', () => {
 
   beforeEach(() => {
     mockPubSubManager = {
-      subscribe: vi.fn().mockResolvedValue(undefined),
-      unsubscribe: vi.fn().mockResolvedValue(undefined)
+      subscribe: jest.fn().mockResolvedValue(undefined),
+      unsubscribe: jest.fn().mockResolvedValue(undefined)
     };
 
     subscribeSpy = mockPubSubManager.subscribe;
