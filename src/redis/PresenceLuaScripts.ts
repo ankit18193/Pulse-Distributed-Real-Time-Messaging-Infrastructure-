@@ -151,7 +151,7 @@ for i = 1, #members do
   end
 end
 
-return onlineMembers
+return table.concat(onlineMembers, ',')
 `;
 
 /**
@@ -213,5 +213,9 @@ export async function executeGetRoomPresenceRoster(
     roomKey,
     nowMs.toString()
   );
-  return (result as string[]) || [];
+  if (!result || typeof result !== 'string' || result.trim() === '') {
+    if (Array.isArray(result)) return result as string[];
+    return [];
+  }
+  return result.split(',').filter(Boolean);
 }
