@@ -6,11 +6,13 @@ import {
   parsePresenceMember,
   DEFAULT_KEY_SAFEGUARD_TTL_SEC
 } from './PresenceLuaScripts.js';
+import { PresenceEventTracker } from './PresenceEventTracker.js';
 import { logger } from '../utils/logger.js';
 
 export interface PresenceManagerOptions {
   presenceTtlMs?: number;
   keySafeguardTtlSec?: number;
+  maxTrackedUsers?: number;
 }
 
 export interface PresenceRegistrationResult {
@@ -33,6 +35,7 @@ export class PresenceManager {
   private readonly instanceId: string;
   private readonly presenceTtlMs: number;
   private readonly keySafeguardTtlSec: number;
+  private readonly eventTracker: PresenceEventTracker;
 
   constructor(
     redisClient: Redis,
@@ -43,10 +46,23 @@ export class PresenceManager {
     this.instanceId = instanceId;
     this.presenceTtlMs = options.presenceTtlMs ?? 60000;
     this.keySafeguardTtlSec = options.keySafeguardTtlSec ?? DEFAULT_KEY_SAFEGUARD_TTL_SEC;
+    this.eventTracker = new PresenceEventTracker({ maxUsers: options.maxTrackedUsers });
   }
 
   public getInstanceId(): string {
     return this.instanceId;
+  }
+
+  public getEventTracker(): PresenceEventTracker {
+    return this.eventTracker;
+  }
+
+  public isStalePresenceEvent(userId: string, timestamp: number): boolean {
+    return this.eventTracker.isStale(userId, timestamp);
+  }
+
+  public recordPresenceEvent(userId: string, timestamp: number): boolean {
+    return this.eventTracker.recordEvent(userId, timestamp);
   }
 
   public getPresenceTtlMs(): number {
