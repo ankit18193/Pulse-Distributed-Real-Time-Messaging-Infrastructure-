@@ -23,6 +23,8 @@ export interface PulseConfig {
   redisRetryInitialDelayMs?: number;
   redisRetryMaxDelayMs?: number;
   maxBufferedAmountBytes?: number;
+  presenceTtlMs?: number;
+  presenceFlushIntervalMs?: number;
 }
 
 export type EventType =

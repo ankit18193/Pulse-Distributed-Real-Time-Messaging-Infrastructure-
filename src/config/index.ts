@@ -58,12 +58,30 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     overrides.redisRetryMaxDelayMs ??
     parseInt(process.env.REDIS_RETRY_MAX_DELAY_MS || '3000', 10);
 
+  // Presence configuration (Phase 4)
+  const presenceTtlMs =
+    overrides.presenceTtlMs ??
+    parseInt(process.env.PRESENCE_TTL_MS || '60000', 10);
+  const presenceFlushIntervalMs =
+    overrides.presenceFlushIntervalMs ??
+    parseInt(process.env.PRESENCE_FLUSH_INTERVAL_MS || '15000', 10);
+
   if (isNaN(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid PORT configuration: ${port}`);
   }
 
   if (isNaN(maxBufferedAmountBytes) || maxBufferedAmountBytes < 1024) {
     throw new Error(`Invalid MAX_BUFFERED_AMOUNT_BYTES configuration: ${maxBufferedAmountBytes}`);
+  }
+
+  if (isNaN(presenceTtlMs) || presenceTtlMs < 1000) {
+    throw new Error(`Invalid PRESENCE_TTL_MS configuration: ${presenceTtlMs}`);
+  }
+
+  if (isNaN(presenceFlushIntervalMs) || presenceFlushIntervalMs < 500 || presenceFlushIntervalMs >= presenceTtlMs) {
+    throw new Error(
+      `Invalid PRESENCE_FLUSH_INTERVAL_MS configuration (${presenceFlushIntervalMs}) must be >= 500 and < presenceTtlMs (${presenceTtlMs})`
+    );
   }
 
   if (redisEnabled) {
@@ -102,6 +120,8 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     redisPassword,
     redisRetryMaxAttempts,
     redisRetryInitialDelayMs,
-    redisRetryMaxDelayMs
+    redisRetryMaxDelayMs,
+    presenceTtlMs,
+    presenceFlushIntervalMs
   };
 }

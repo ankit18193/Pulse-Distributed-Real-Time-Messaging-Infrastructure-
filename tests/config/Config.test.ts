@@ -107,4 +107,32 @@ describe('Config Loader & Redis Configuration', () => {
       })
     ).toThrow('Invalid REDIS_RETRY_MAX_DELAY_MS configuration (500) must be >= initial delay (1000)');
   });
+
+  test('loads presence configuration with safe defaults and validates ranges', () => {
+    const defaultConfig = loadConfig();
+    expect(defaultConfig.presenceTtlMs).toBe(60000);
+    expect(defaultConfig.presenceFlushIntervalMs).toBe(15000);
+
+    process.env.PRESENCE_TTL_MS = '90000';
+    process.env.PRESENCE_FLUSH_INTERVAL_MS = '20000';
+    const customConfig = loadConfig();
+    expect(customConfig.presenceTtlMs).toBe(90000);
+    expect(customConfig.presenceFlushIntervalMs).toBe(20000);
+
+    delete process.env.PRESENCE_TTL_MS;
+    delete process.env.PRESENCE_FLUSH_INTERVAL_MS;
+
+    expect(() =>
+      loadConfig({
+        presenceTtlMs: 500
+      })
+    ).toThrow('Invalid PRESENCE_TTL_MS configuration: 500');
+
+    expect(() =>
+      loadConfig({
+        presenceTtlMs: 60000,
+        presenceFlushIntervalMs: 70000
+      })
+    ).toThrow('Invalid PRESENCE_FLUSH_INTERVAL_MS configuration');
+  });
 });
