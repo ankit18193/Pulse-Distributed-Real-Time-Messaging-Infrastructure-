@@ -8,6 +8,9 @@ import {
   DEFAULT_KEY_SAFEGUARD_TTL_SEC
 } from './PresenceLuaScripts.js';
 import { PresenceEventTracker } from './PresenceEventTracker.js';
+import type { PresenceStatus, PresenceUpdatePayload, PulseEventEnvelope } from '../types/index.js';
+import type { RedisPubSubManager } from './RedisPubSubManager.js';
+import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
 export interface PresenceManagerOptions {
@@ -15,6 +18,7 @@ export interface PresenceManagerOptions {
   presenceFlushIntervalMs?: number;
   keySafeguardTtlSec?: number;
   maxTrackedUsers?: number;
+  pubSubManager?: RedisPubSubManager;
 }
 
 export interface PresenceRegistrationResult {
@@ -41,6 +45,7 @@ export class PresenceManager {
   private readonly eventTracker: PresenceEventTracker;
   private readonly localConnections: Map<string, { userId: string; connectionId: string }> = new Map();
   private activeConnectionProvider?: () => Array<{ userId: string; connectionId: string }>;
+  private pubSubManager?: RedisPubSubManager;
   private renewalTimer?: NodeJS.Timeout;
   private isFlushing: boolean = false;
 
@@ -55,6 +60,7 @@ export class PresenceManager {
     this.presenceFlushIntervalMs = options.presenceFlushIntervalMs ?? 15000;
     this.keySafeguardTtlSec = options.keySafeguardTtlSec ?? DEFAULT_KEY_SAFEGUARD_TTL_SEC;
     this.eventTracker = new PresenceEventTracker({ maxUsers: options.maxTrackedUsers });
+    this.pubSubManager = options.pubSubManager;
   }
 
   public getInstanceId(): string {
@@ -63,6 +69,14 @@ export class PresenceManager {
 
   public getPresenceFlushIntervalMs(): number {
     return this.presenceFlushIntervalMs;
+  }
+
+  public getPubSubManager(): RedisPubSubManager | undefined {
+    return this.pubSubManager;
+  }
+
+  public setPubSubManager(pubSubManager: RedisPubSubManager): void {
+    this.pubSubManager = pubSubManager;
   }
 
   public getEventTracker(): PresenceEventTracker {
@@ -122,6 +136,10 @@ export class PresenceManager {
         activeConnections
       });
 
+      if (transition === 1) {
+        await this.publishPresenceUpdate(userId, 'ONLINE', activeConnections);
+      }
+
       return {
         isOnlineTransition: transition === 1,
         activeConnections
@@ -178,6 +196,10 @@ export class PresenceManager {
         activeConnections
       });
 
+      if (transition === 1) {
+        await this.publishPresenceUpdate(userId, 'OFFLINE', activeConnections);
+      }
+
       return {
         isOfflineTransition: transition === 1,
         activeConnections
@@ -193,6 +215,57 @@ export class PresenceManager {
         isOfflineTransition: false,
         activeConnections: 0
       };
+    }
+  }
+
+  /**
+   * Publishes a PRESENCE_UPDATE distributed event to Redis Pub/Sub (pulse:presence:events).
+   * Stamps the local instanceId onto originInstanceId.
+   */
+  public async publishPresenceUpdate(
+    userId: string,
+    status: PresenceStatus,
+    activeConnections: number,
+    rooms?: string[]
+  ): Promise<void> {
+    if (!this.pubSubManager || !this.pubSubManager.isConnected()) {
+      return;
+    }
+
+    const payload: PresenceUpdatePayload = {
+      userId,
+      status,
+      activeConnections,
+      rooms
+    };
+
+    const envelope: PulseEventEnvelope = {
+      eventId: generateUUIDv7(),
+      type: 'PRESENCE_UPDATE',
+      timestamp: Date.now(),
+      senderId: 'system',
+      originInstanceId: this.instanceId,
+      payload
+    };
+
+    try {
+      await this.pubSubManager.publishPresence(envelope);
+      logger.info('Published distributed presence event', {
+        component: 'PresenceManager',
+        instanceId: this.instanceId,
+        userId,
+        status,
+        activeConnections,
+        eventId: envelope.eventId
+      });
+    } catch (err) {
+      logger.warn('Failed to publish distributed presence event', {
+        component: 'PresenceManager',
+        instanceId: this.instanceId,
+        userId,
+        status,
+        error: err instanceof Error ? err.message : String(err)
+      });
     }
   }
 

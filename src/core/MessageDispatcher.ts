@@ -1,33 +1,41 @@
+import { EventEmitter } from 'events';
 import { Connection } from './Connection.js';
 import { ConnectionManager } from './ConnectionManager.js';
 import { RoomManager } from './RoomManager.js';
 import { IdempotencyManager } from './IdempotencyManager.js';
 import { EventValidator } from '../events/EventValidator.js';
-import { PulseEventEnvelope } from '../types/index.js';
+import { PulseEventEnvelope, PresenceUpdatePayload } from '../types/index.js';
 import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
+import type { PresenceManager } from '../redis/PresenceManager.js';
 import { extractRoomId, extractUserId } from '../redis/ChannelRegistry.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
-export class MessageDispatcher {
+export interface MessageDispatcherOptions {
+  connectionManager: ConnectionManager;
+  roomManager: RoomManager;
+  idempotencyManager?: IdempotencyManager;
+  redisPubSubManager?: RedisPubSubManager;
+  presenceManager?: PresenceManager;
+  instanceId: string;
+}
+
+export class MessageDispatcher extends EventEmitter {
   private readonly connectionManager: ConnectionManager;
   private readonly roomManager: RoomManager;
   private readonly idempotencyManager: IdempotencyManager;
   private readonly redisPubSubManager?: RedisPubSubManager;
+  private presenceManager?: PresenceManager;
   private readonly instanceId: string;
 
-  constructor(options: {
-    connectionManager: ConnectionManager;
-    roomManager: RoomManager;
-    idempotencyManager?: IdempotencyManager;
-    redisPubSubManager?: RedisPubSubManager;
-    instanceId: string;
-  }) {
+  constructor(options: MessageDispatcherOptions) {
+    super();
     this.connectionManager = options.connectionManager;
     this.roomManager = options.roomManager;
     this.idempotencyManager =
       options.idempotencyManager ?? new IdempotencyManager();
     this.redisPubSubManager = options.redisPubSubManager;
+    this.presenceManager = options.presenceManager;
     this.instanceId = options.instanceId;
 
     if (this.redisPubSubManager) {
@@ -35,6 +43,18 @@ export class MessageDispatcher {
         this.handleInboundRedisEvent(channel, message);
       });
     }
+  }
+
+  public getPresenceManager(): PresenceManager | undefined {
+    return this.presenceManager;
+  }
+
+  public setPresenceManager(presenceManager: PresenceManager): void {
+    this.presenceManager = presenceManager;
+  }
+
+  public onPresenceUpdate(handler: (envelope: PulseEventEnvelope) => void): void {
+    this.on('presence_update', handler);
   }
 
   public getIdempotencyManager(): IdempotencyManager {
@@ -198,6 +218,46 @@ export class MessageDispatcher {
         recipientId,
         eventId: envelope.eventId,
         deliveredCount: delivered
+      });
+
+      return true;
+    }
+
+    if (envelope.type === 'PRESENCE_UPDATE') {
+      const payload = envelope.payload as PresenceUpdatePayload;
+      if (!payload || !payload.userId || !payload.status) {
+        logger.warn('Inbound Redis presence event missing required payload fields', {
+          component: 'MessageDispatcher',
+          channel,
+          eventId: envelope.eventId
+        });
+        return false;
+      }
+
+      // Stale presence event protection
+      if (this.presenceManager) {
+        if (this.presenceManager.isStalePresenceEvent(payload.userId, envelope.timestamp)) {
+          logger.debug('Dropped stale inbound presence event', {
+            component: 'MessageDispatcher',
+            userId: payload.userId,
+            eventId: envelope.eventId,
+            timestamp: envelope.timestamp
+          });
+          return false;
+        }
+        this.presenceManager.recordPresenceEvent(payload.userId, envelope.timestamp);
+      }
+
+      this.redisPubSubManager?.getMetrics?.().recordInbound(Date.now() - inboundStartTime);
+
+      this.emit('presence_update', envelope);
+
+      logger.info('Processed inbound distributed presence event', {
+        component: 'MessageDispatcher',
+        userId: payload.userId,
+        status: payload.status,
+        activeConnections: payload.activeConnections,
+        originInstanceId: envelope.originInstanceId
       });
 
       return true;
