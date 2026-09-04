@@ -231,8 +231,23 @@ export class PulseServer {
 
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     if (req.url === '/healthz' || req.url === '/health') {
+      const isRedisDegraded = Boolean(
+        this.redisPubSubManager && !this.redisPubSubManager.isConnected()
+      );
+
+      let status: 'DRAINING' | 'DEGRADED' | 'OK' = 'OK';
+      let statusCode = 200;
+
+      if (this.isShuttingDown) {
+        status = 'DRAINING';
+        statusCode = 503;
+      } else if (isRedisDegraded) {
+        status = 'DEGRADED';
+        statusCode = 200;
+      }
+
       const healthData = {
-        status: this.isShuttingDown ? 'DRAINING' : 'OK',
+        status,
         instanceId: this.config.instanceId,
         timestamp: Date.now(),
         connections: this.connectionManager.getCount(),
@@ -247,7 +262,7 @@ export class PulseServer {
           : { enabled: false }
       };
 
-      res.writeHead(this.isShuttingDown ? 503 : 200, {
+      res.writeHead(statusCode, {
         'Content-Type': 'application/json'
       });
       res.end(JSON.stringify(healthData));
@@ -277,7 +292,8 @@ export class PulseServer {
       connectionId,
       userId,
       roles,
-      remoteAddress
+      remoteAddress,
+      maxBufferedAmountBytes: this.config.maxBufferedAmountBytes
     });
 
     this.connectionManager.addConnection(connection);

@@ -33,6 +33,10 @@ export class RedisMetrics {
     this.inFlightPublishes++;
   }
 
+  public recordPublishRejected(): void {
+    this.publishErrors++;
+  }
+
   public recordPublishEnd(durationMs: number, error?: boolean): void {
     this.inFlightPublishes = Math.max(0, this.inFlightPublishes - 1);
     if (error) {

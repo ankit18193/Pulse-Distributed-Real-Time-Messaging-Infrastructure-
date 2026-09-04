@@ -1,0 +1,875 @@
+Absolutely, Captain. **Yes — this is exactly how we should proceed.** We already have the North Star document, so now we should understand the **entire implementation journey once**, without getting buried in code yet.
+
+Think of Pulse as building a small distributed-systems laboratory.
+
+---
+
+# ⚡ Pulse — Overall Implementation Journey
+
+The final system we're aiming for is:
+
+```text
+                         CLIENTS
+                            │
+                            ▼
+                     ┌─────────────┐
+                     │   RouteX    │
+                     │ Edge Gateway│
+                     └──────┬──────┘
+                            │
+                    HTTP + WebSocket
+                            │
+                            ▼
+                 ┌─────────────────────┐
+                 │        PULSE        │
+                 │ Realtime Infrastructure
+                 └──────────┬──────────┘
+                            │
+                      Redis Pub/Sub
+                            │
+               ┌────────────┼────────────┐
+               ▼            ▼            ▼
+           Pulse A       Pulse B       Pulse C
+               │            │            │
+               └────────────┼────────────┘
+                            │
+                            ▼
+                     Persistent DB
+```
+
+But **we don't build this whole thing at once.**
+
+We gradually evolve:
+
+```text
+Single server
+     ↓
+Reliable server
+     ↓
+Multiple servers
+     ↓
+Redis distribution
+     ↓
+Distributed presence
+     ↓
+Observability
+     ↓
+Failure recovery
+     ↓
+RouteX
+     ↓
+Frontend
+     ↓
+Dashboard
+     ↓
+Production hardening
+```
+
+That's the whole game.
+
+---
+
+# Phase 0 — Foundation 🧱
+
+First, we establish the ground.
+
+We'll set up:
+
+* TypeScript
+* Node.js project
+* project structure
+* configuration
+* environment handling
+* logging
+* error handling
+* testing
+* Docker foundation
+* G Stack/Antigravity workflow
+* architectural contracts
+* event model
+* initial ADRs
+
+### The important point
+
+**Nothing distributed yet.**
+
+We're basically saying:
+
+> "Before building the engine, let's build the workshop."
+
+At the end:
+
+```text
+Pulse starts
+Pulse builds
+Pulse tests
+Pulse has clean structure
+```
+
+---
+
+# Phase 1 — Single Pulse Server 🔌
+
+Now we build the actual realtime engine.
+
+One Pulse instance:
+
+```text
+Client
+   │
+   │ WebSocket
+   ▼
+Pulse
+```
+
+We'll implement:
+
+### Connection management
+
+```text
+CONNECT
+   ↓
+AUTHENTICATE
+   ↓
+CONNECTED
+   ↓
+ACTIVE
+   ↓
+DISCONNECT
+```
+
+### Rooms
+
+```text
+Room A
+ ├── User 1
+ ├── User 2
+ └── User 3
+
+Room B
+ ├── User 4
+ └── User 5
+```
+
+### Messaging
+
+```text
+User A
+   ↓
+Pulse
+   ↓
+Room A
+   ↓
+User B
+User C
+User D
+```
+
+### Also:
+
+* authentication
+* event validation
+* heartbeats
+* ACKs
+* graceful disconnect
+* connection cleanup
+
+At this stage, **Pulse is already a functional realtime server**.
+
+But it's still only one server.
+
+---
+
+# Phase 2 — Reliability 🛡️
+
+Now we ask:
+
+> What happens when things go wrong?
+
+This is where Pulse starts becoming an infrastructure project rather than a demo.
+
+We'll deal with:
+
+### Dead connections
+
+```text
+Client
+  X
+Pulse
+```
+
+Heartbeat detects it.
+
+```text
+PING
+ ↓
+PONG ❌
+ ↓
+timeout
+ ↓
+cleanup
+```
+
+### Reconnection
+
+```text
+Client
+   ↓
+Pulse
+   X
+connection lost
+   ↓
+reconnect
+   ↓
+Pulse
+   ↓
+restore state
+```
+
+### ACKs
+
+```text
+Client
+   ↓
+MESSAGE
+   ↓
+Pulse
+   ↓
+ACK
+```
+
+We'll also establish our strategy for:
+
+* duplicate events
+* event IDs
+* idempotency
+* ordering
+* retries
+* shutdown
+
+This phase is extremely important for interviews.
+
+---
+
+# Phase 3 — Multiple Pulse Instances 📈
+
+Now comes the **distributed system**.
+
+Instead of:
+
+```text
+Client
+  ↓
+Pulse
+```
+
+we have:
+
+```text
+             Load Balancer
+                  │
+        ┌─────────┼─────────┐
+        ▼         ▼         ▼
+     Pulse A   Pulse B   Pulse C
+```
+
+Different users may connect to different servers.
+
+For example:
+
+```text
+Alice → Pulse A
+
+Bob → Pulse B
+```
+
+Now Alice sends Bob a message.
+
+Problem:
+
+```text
+Alice
+ ↓
+Pulse A
+ ↓
+???
+ ↓
+Pulse B
+ ↓
+Bob
+```
+
+Pulse A doesn't own Bob's connection.
+
+**This is the problem Redis will solve.**
+
+---
+
+# Phase 4 — Redis Pub/Sub 🚀
+
+Now we introduce Redis.
+
+```text
+Alice
+  ↓
+Pulse A
+  ↓
+Redis PUBLISH
+  ↓
+Redis Channel
+  ↓
+Pulse B
+  ↓
+Bob
+```
+
+Now Pulse instances can communicate.
+
+Example:
+
+```text
+Pulse A
+   │
+   │ publish
+   ▼
+Redis
+   │
+   │ subscribe
+   ├──────────────► Pulse B
+   │
+   └──────────────► Pulse C
+```
+
+This is the heart of the distributed architecture.
+
+We'll design:
+
+* Redis connection management
+* publisher
+* subscriber
+* channel strategy
+* event propagation
+* cross-instance room messaging
+* Redis failure handling
+
+And then prove it with an actual test:
+
+```text
+Client A
+   ↓
+Pulse A
+   ↓
+Redis
+   ↓
+Pulse B
+   ↓
+Client B
+```
+
+If that works reliably, **we have a genuine distributed realtime system.**
+
+---
+
+# Phase 5 — Distributed Presence 👥
+
+Now we solve:
+
+> "Who is online?"
+
+But in a distributed environment:
+
+```text
+Ankit → Pulse A
+Rahul → Pulse B
+Priya → Pulse C
+```
+
+We need a shared understanding of presence.
+
+We'll deal with:
+
+* online/offline
+* last seen
+* multiple connections
+* connection ownership
+* distributed presence
+* cleanup
+* stale state
+
+This introduces an important distributed-systems concept:
+
+> **Eventually consistent ephemeral state.**
+
+And we'll be careful about what Redis should and shouldn't be responsible for.
+
+---
+
+# Phase 6 — Observability + Performance 📊
+
+Now we make Pulse measurable.
+
+We'll add things like:
+
+```text
+Active Connections       4,821
+Messages/sec             1,284
+Redis Events/sec         1,091
+p50 Latency              8 ms
+p95 Latency              21 ms
+Reconnects               37
+```
+
+Not fake numbers.
+
+**Actual numbers from our tests.**
+
+We'll instrument:
+
+* connection count
+* event count
+* message throughput
+* latency
+* Redis activity
+* errors
+* reconnects
+* health
+
+Then load testing.
+
+We'll ask:
+
+> How many connections can one Pulse instance handle?
+
+> What happens to latency when traffic increases?
+
+> What happens when Redis becomes a bottleneck?
+
+That's where the project becomes much more interesting.
+
+---
+
+# Phase 7 — Failure & Resilience 💥
+
+This is one of my favorite phases.
+
+We intentionally break things.
+
+### Kill Pulse A
+
+```text
+              Redis
+             /     \
+            /       \
+       Pulse A     Pulse B
+          X
+```
+
+What happens?
+
+Clients connected to A should detect the failure and reconnect.
+
+### Kill Redis
+
+```text
+Pulse A
+   X
+ Redis
+   X
+Pulse B
+```
+
+What happens?
+
+Does local communication continue?
+
+Do we reject certain operations?
+
+Do we degrade gracefully?
+
+### Other scenarios
+
+We'll test:
+
+* connection drops
+* server crashes
+* Redis failure
+* malformed events
+* reconnect storms
+* overload
+* graceful shutdown
+
+This gives us actual **resilience engineering**.
+
+---
+
+# Phase 8 — RouteX Integration 🌐
+
+**Only now** do we bring RouteX into the picture.
+
+Before this phase:
+
+```text
+Client
+ ↓
+Pulse
+```
+
+After this phase:
+
+```text
+Client
+ ↓
+RouteX
+ ↓
+Pulse
+```
+
+RouteX becomes the edge.
+
+It handles things such as:
+
+* routing
+* authentication
+* rate limiting
+* security
+* HTTP proxying
+* WebSocket upgrade/proxying
+
+Pulse remains responsible for:
+
+* realtime connections
+* rooms
+* messaging
+* presence
+* event distribution
+
+### If RouteX doesn't support WebSockets properly
+
+We extend RouteX.
+
+Conceptually:
+
+```text
+HTTP Request
+     ↓
+   RouteX
+     ↓
+   routing
+     ↓
+HTTP upstream
+```
+
+and:
+
+```text
+WebSocket Request
+     ↓
+   RouteX
+     ↓
+Upgrade: websocket
+     ↓
+   Pulse
+     ↓
+Long-lived connection
+```
+
+This is a **very strong connection between your two projects**.
+
+---
+
+# Phase 9 — Demo Frontend 🎨
+
+Only after the infrastructure works properly do we make the frontend.
+
+And we're intentionally keeping it small.
+
+Something like:
+
+```text
+┌───────────────────────────────────────┐
+│ Pulse                         ● Online│
+├────────────┬──────────────────────────┤
+│ Rooms      │ # engineering            │
+│            │                          │
+│ #general   │ Ankit: Hello             │
+│ #backend   │ Rahul: Hey!              │
+│ #random    │ Priya: What's up?        │
+│            │                          │
+│            ├──────────────────────────┤
+│            │ Type a message...        │
+└────────────┴──────────────────────────┘
+```
+
+But the UI will expose infrastructure information too:
+
+```text
+Connected to: Pulse-B
+Latency: 12ms
+Status: Connected
+```
+
+So users can actually **see the infrastructure working**.
+
+---
+
+# Phase 10 — Infrastructure Dashboard 📡
+
+Now we build the impressive part.
+
+Something like:
+
+```text
+             PULSE CONTROL CENTER
+
+Connections
+     4,821
+
+┌──────────┬──────────┬──────────┐
+│ Pulse A  │ Pulse B  │ Pulse C  │
+│ 1,543    │ 1,624    │ 1,654    │
+└──────────┴──────────┴──────────┘
+
+Messages/sec       1,284
+Redis events/sec   1,091
+
+p50 latency        8ms
+p95 latency        21ms
+
+Rooms              382
+Online users       4,201
+
+Redis              HEALTHY
+Pulse A            HEALTHY
+Pulse B            HEALTHY
+Pulse C            HEALTHY
+```
+
+And potentially:
+
+**Kill Pulse B**
+
+Then visually watch:
+
+```text
+Pulse B
+   ↓
+FAILED
+
+Clients
+   ↓
+RECONNECTING
+   ↓
+Pulse A / C
+   ↓
+CONNECTED
+```
+
+🔥 That's the kind of demo that makes someone understand the project in seconds.
+
+---
+
+# Phase 11 — End-to-End Hardening 🧪
+
+Now we become ruthless.
+
+We'll test everything.
+
+```text
+Unit
+ ↓
+Integration
+ ↓
+Distributed
+ ↓
+E2E
+ ↓
+Failure
+ ↓
+Security
+ ↓
+Load
+```
+
+We'll verify:
+
+* authentication
+* authorization
+* rooms
+* messaging
+* presence
+* reconnect
+* Redis
+* multiple instances
+* RouteX
+* WebSockets
+* failure recovery
+* performance
+* Docker
+
+No "works on my machine."
+
+---
+
+# Phase 12 — Release 🚢
+
+Finally we package the engineering story.
+
+We'll produce:
+
+* README
+* architecture diagram
+* sequence diagrams
+* setup instructions
+* event documentation
+* benchmark report
+* failure report
+* testing report
+* engineering decisions
+* demo
+* deployment instructions
+
+Then the final portfolio story becomes:
+
+```text
+RouteX
+  │
+  │ Edge / HTTP Infrastructure
+  ▼
+Pulse
+  │
+  │ Realtime Infrastructure
+  ▼
+Redis
+  │
+  │ Distributed Event Bus
+  ▼
+Multiple Pulse Instances
+  │
+  │ Horizontal Scaling
+  ▼
+Observability + Failure Testing
+```
+
+---
+
+# 🧠 The Entire Journey in One Picture
+
+This is what I want you to keep in your head:
+
+```text
+                 PULSE
+                   │
+                   ▼
+        ┌────────────────────┐
+        │   PHASE 0           │
+        │   Foundation        │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 1           │
+        │   Single Node       │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 2           │
+        │   Reliability       │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 3           │
+        │   Multiple Nodes    │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 4           │
+        │   Redis Pub/Sub     │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 5           │
+        │   Presence          │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 6           │
+        │   Metrics/Perf      │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 7           │
+        │   Failure Testing   │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 8           │
+        │   RouteX            │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 9           │
+        │   Demo UI           │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 10          │
+        │   Dashboard         │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 11          │
+        │   Hardening         │
+        └─────────┬──────────┘
+                  ▼
+        ┌────────────────────┐
+        │   PHASE 12          │
+        │   Release            │
+        └────────────────────┘
+```
+
+## The most important thing
+
+We are **not building 12 separate projects**.
+
+We're evolving **one system**.
+
+```text
+Phase 1:
+"I can communicate."
+
+Phase 2:
+"I can communicate reliably."
+
+Phase 3:
+"I can run multiple servers."
+
+Phase 4:
+"Those servers can communicate."
+
+Phase 5:
+"I understand distributed presence."
+
+Phase 6:
+"I can measure the system."
+
+Phase 7:
+"I can survive failures."
+
+Phase 8:
+"I can put a real gateway in front of it."
+
+Phase 9–10:
+"I can demonstrate it beautifully."
+
+Phase 11–12:
+"I can prove and ship it."
+```
+
+And that's exactly why I like **RouteX → Pulse** so much.
+
+RouteX taught us the **HTTP/edge side of infrastructure**.
+
+Pulse will teach us the **persistent/realtime/distributed side**.
+
+Together, they tell a much stronger engineering story than two unrelated CRUD projects.
+
+So yes, Captain — **we'll discuss the implementation phase-by-phase.** We should start with **Phase 0**, and for that phase I'll break down exactly what we're going to create, why each piece exists, folder structure, dependencies, contracts, commands, and acceptance tests **before you let Antigravity implement anything**.

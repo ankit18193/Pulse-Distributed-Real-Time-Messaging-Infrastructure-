@@ -12,6 +12,7 @@ export class Connection {
   public lastSeenSeq: number = 0;
   public readonly socket: WebSocket;
   public readonly remoteAddress: string;
+  public readonly maxBufferedAmountBytes: number;
   private readonly rooms: Set<string> = new Set();
   private isCleanedUp: boolean = false;
 
@@ -21,12 +22,14 @@ export class Connection {
     roles?: string[];
     socket: WebSocket;
     remoteAddress?: string;
+    maxBufferedAmountBytes?: number;
   }) {
     this.connectionId = options.connectionId ?? generateUUIDv7();
     this.userId = options.userId;
     this.roles = options.roles ?? ['user'];
     this.socket = options.socket;
     this.remoteAddress = options.remoteAddress ?? 'unknown';
+    this.maxBufferedAmountBytes = options.maxBufferedAmountBytes ?? 1024 * 1024;
     this.connectedAt = Date.now();
     this.lastSeenAt = this.connectedAt;
   }
@@ -44,6 +47,19 @@ export class Connection {
         userId: this.userId,
         readyState: this.socket.readyState
       });
+      return false;
+    }
+
+    if (this.socket.bufferedAmount > this.maxBufferedAmountBytes) {
+      logger.warn('Connection exceeded maximum bufferedAmount; closing slow consumer', {
+        component: 'Connection',
+        event: 'SLOW_CONSUMER_DROP',
+        connectionId: this.connectionId,
+        userId: this.userId,
+        bufferedAmount: this.socket.bufferedAmount,
+        maxBufferedAmountBytes: this.maxBufferedAmountBytes
+      });
+      this.close(1008, 'Policy Violation: Buffer overflow / slow consumer');
       return false;
     }
 

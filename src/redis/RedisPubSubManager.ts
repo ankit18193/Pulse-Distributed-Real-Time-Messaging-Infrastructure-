@@ -52,6 +52,7 @@ export class RedisPubSubManager extends EventEmitter {
     this.subscribedChannels.clear();
     this.metrics.setChannelsActive(0);
     this.metrics.setConnectionState('disconnected');
+    this.isSubscribedToClientEvents = false;
     await this.connectionManager.disconnect();
   }
 
@@ -65,7 +66,7 @@ export class RedisPubSubManager extends EventEmitter {
 
     // Bounded backpressure policy: reject publish if in-flight limit reached
     if (this.metrics.getInFlightCount() >= this.maxInFlightPublishes) {
-      this.metrics.recordPublishEnd(0, true);
+      this.metrics.recordPublishRejected();
       const backpressureError = new Error(
         `Redis publish backpressure limit reached (${this.maxInFlightPublishes} in-flight)`
       );

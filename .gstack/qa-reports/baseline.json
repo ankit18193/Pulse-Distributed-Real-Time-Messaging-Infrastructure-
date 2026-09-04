@@ -1,0 +1,29 @@
+{
+  "date": "2026-09-02",
+  "service": "pulse-realtime",
+  "version": "0.1.0",
+  "healthScore": 98,
+  "testResults": {
+    "totalSuites": 19,
+    "passedSuites": 19,
+    "totalTests": 68,
+    "passedTests": 68,
+    "failedTests": 0
+  },
+  "coverage": {
+    "statements": 86.1,
+    "branches": 78.6,
+    "functions": 84.39,
+    "lines": 86.04
+  },
+  "categoryScores": {
+    "protocolCompliance": 100,
+    "functionalMessaging": 100,
+    "reconnectionReliability": 100,
+    "idempotencyAndDeduplication": 98,
+    "heartbeatAndKeepalive": 98,
+    "securityAndAuth": 100,
+    "memoryAndResourceSafety": 95
+  },
+  "issues": []
+}

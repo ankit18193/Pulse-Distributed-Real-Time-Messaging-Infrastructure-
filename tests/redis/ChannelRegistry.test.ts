@@ -141,5 +141,25 @@ describe('ChannelRegistry & Reference-Counted Subscriptions', () => {
       expect(unsubscribeSpy).toHaveBeenCalledWith('pulse:room:beta');
       expect(unsubscribeSpy).toHaveBeenCalledWith('pulse:user:user1');
     });
+
+    test('rolls back reference count when physical Redis subscription fails and enables retry', async () => {
+      const channel = 'pulse:room:flaky_room';
+
+      // Mock pubSubManager.subscribe to fail once
+      subscribeSpy.mockImplementationOnce(async () => {
+        throw new Error('Redis subscription failed temporarily');
+      });
+
+      // Attempt 1: Should fail and rollback refCount to 0
+      await expect(registry.subscribeRoom('flaky_room')).rejects.toThrow(
+        'Redis subscription failed temporarily'
+      );
+      expect(registry.getRefCount(channel)).toBe(0);
+
+      // Attempt 2: Retry should attempt 0 -> 1 transition again and succeed
+      const retrySuccess = await registry.subscribeRoom('flaky_room');
+      expect(retrySuccess).toBe(true);
+      expect(registry.getRefCount(channel)).toBe(1);
+    });
   });
 });

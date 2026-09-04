@@ -9,11 +9,16 @@ describe('RedisPubSubManager', () => {
   let pubSubManager: RedisPubSubManager;
 
   beforeEach(async () => {
-    mockPublisher = new RedisMock();
-    mockSubscriber = new RedisMock();
-
     connectionManager = new RedisConnectionManager({
-      customClientFactory: (role) => (role === 'publisher' ? mockPublisher : mockSubscriber)
+      customClientFactory: (role) => {
+        if (role === 'publisher') {
+          mockPublisher = new RedisMock();
+          return mockPublisher;
+        } else {
+          mockSubscriber = new RedisMock();
+          return mockSubscriber;
+        }
+      }
     });
 
     pubSubManager = new RedisPubSubManager(connectionManager, 'pulse-node-test');
@@ -121,5 +126,29 @@ describe('RedisPubSubManager', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(subSpy).toHaveBeenCalledWith('pulse:room:one', 'pulse:room:two');
+  });
+
+  test('reconnecting the same manager after disconnect attaches subscriber message listener exactly once', async () => {
+    const received: string[] = [];
+    pubSubManager.onMessage((channel, message) => {
+      received.push(message);
+    });
+
+    await pubSubManager.subscribe('pulse:room:test');
+    mockSubscriber.emit('message', 'pulse:room:test', 'hello-1');
+    expect(received).toEqual(['hello-1']);
+
+    // Disconnect
+    await pubSubManager.disconnect();
+
+    // Reconnect the EXACT SAME pubSubManager instance
+    await pubSubManager.connect();
+
+    // Get the active subscriber client from connectionManager
+    const newSubscriber = connectionManager.getSubscriber();
+    await pubSubManager.subscribe('pulse:room:test');
+
+    newSubscriber.emit('message', 'pulse:room:test', 'hello-2');
+    expect(received).toEqual(['hello-1', 'hello-2']);
   });
 });

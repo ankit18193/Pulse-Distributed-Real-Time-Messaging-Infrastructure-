@@ -21,6 +21,9 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
   const maxPayloadBytes =
     overrides.maxPayloadBytes ??
     parseInt(process.env.MAX_PAYLOAD_BYTES || '65536', 10);
+  const maxBufferedAmountBytes =
+    overrides.maxBufferedAmountBytes ??
+    parseInt(process.env.MAX_BUFFERED_AMOUNT_BYTES || '1048576', 10);
   const authSecret =
     overrides.authSecret ?? process.env.AUTH_SECRET ?? 'pulse-dev-secret-key-32chars-min';
 
@@ -59,6 +62,10 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     throw new Error(`Invalid PORT configuration: ${port}`);
   }
 
+  if (isNaN(maxBufferedAmountBytes) || maxBufferedAmountBytes < 1024) {
+    throw new Error(`Invalid MAX_BUFFERED_AMOUNT_BYTES configuration: ${maxBufferedAmountBytes}`);
+  }
+
   if (redisEnabled) {
     if (isNaN(redisPort) || redisPort < 1 || redisPort > 65535) {
       throw new Error(`Invalid REDIS_PORT configuration: ${redisPort}`);
@@ -84,6 +91,7 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     heartbeatIntervalMs,
     heartbeatTimeoutMs,
     maxPayloadBytes,
+    maxBufferedAmountBytes,
     authSecret,
     idempotencyCapacity,
     idempotencyTtlMs,

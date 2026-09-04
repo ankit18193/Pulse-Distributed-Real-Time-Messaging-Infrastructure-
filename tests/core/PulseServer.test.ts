@@ -82,4 +82,130 @@ describe('PulseServer Core Lifecycle (Commit 1 & 2)', () => {
     expect(closeResult.code).toBe(1001); // 1001 Going Away
     expect(server.getActiveConnectionCount()).toBe(0);
   });
+
+  describe('Health Endpoint States (/healthz)', () => {
+    it('reports status: DEGRADED when Redis is enabled but disconnected', async () => {
+      const degradedPort = 9183;
+      const mockPubSub: any = {
+        connect: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn().mockResolvedValue(undefined),
+        isConnected: jest.fn().mockReturnValue(false),
+        getStatus: jest.fn().mockReturnValue({ publisher: 'disconnected', subscriber: 'disconnected', isConnected: false }),
+        getMetricsSnapshot: jest.fn().mockReturnValue({}),
+        onMessage: jest.fn()
+      };
+
+      const degradedConfig = loadConfig({
+        port: degradedPort,
+        host: '127.0.0.1',
+        nodeEnv: 'test',
+        instanceId: 'test-degraded-node',
+        authSecret: 'pulse-test-secret-32-chars-long!',
+        redisEnabled: true
+      });
+
+      const degradedServer = new PulseServer(degradedConfig, {}, { redisPubSubManager: mockPubSub });
+      await degradedServer.start();
+
+      try {
+        const res = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+          http.get(`http://127.0.0.1:${degradedPort}/healthz`, (response) => {
+            let data = '';
+            response.on('data', (chunk) => (data += chunk));
+            response.on('end', () =>
+              resolve({ statusCode: response.statusCode || 0, body: data })
+            );
+          }).on('error', reject);
+        });
+
+        expect(res.statusCode).toBe(200);
+        const parsed = JSON.parse(res.body);
+        expect(parsed.status).toBe('DEGRADED');
+        expect(parsed.redis.enabled).toBe(true);
+        expect(parsed.redis.isConnected).toBe(false);
+      } finally {
+        await degradedServer.stop();
+      }
+    });
+
+    it('reports status: OK when Redis is enabled and connected', async () => {
+      const connectedPort = 9184;
+      const mockPubSub: any = {
+        connect: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn().mockResolvedValue(undefined),
+        isConnected: jest.fn().mockReturnValue(true),
+        getStatus: jest.fn().mockReturnValue({ publisher: 'connected', subscriber: 'connected', isConnected: true }),
+        getMetricsSnapshot: jest.fn().mockReturnValue({}),
+        onMessage: jest.fn()
+      };
+
+      const connectedConfig = loadConfig({
+        port: connectedPort,
+        host: '127.0.0.1',
+        nodeEnv: 'test',
+        instanceId: 'test-connected-node',
+        authSecret: 'pulse-test-secret-32-chars-long!',
+        redisEnabled: true
+      });
+
+      const connectedServer = new PulseServer(connectedConfig, {}, { redisPubSubManager: mockPubSub });
+      await connectedServer.start();
+
+      try {
+        const res = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+          http.get(`http://127.0.0.1:${connectedPort}/healthz`, (response) => {
+            let data = '';
+            response.on('data', (chunk) => (data += chunk));
+            response.on('end', () =>
+              resolve({ statusCode: response.statusCode || 0, body: data })
+            );
+          }).on('error', reject);
+        });
+
+        expect(res.statusCode).toBe(200);
+        const parsed = JSON.parse(res.body);
+        expect(parsed.status).toBe('OK');
+        expect(parsed.redis.enabled).toBe(true);
+        expect(parsed.redis.isConnected).toBe(true);
+      } finally {
+        await connectedServer.stop();
+      }
+    });
+
+    it('reports status: DRAINING and HTTP 503 during shutdown', async () => {
+      const drainingPort = 9185;
+      const drainingConfig = loadConfig({
+        port: drainingPort,
+        host: '127.0.0.1',
+        nodeEnv: 'test',
+        instanceId: 'test-draining-node',
+        authSecret: 'pulse-test-secret-32-chars-long!'
+      });
+
+      const drainingServer = new PulseServer(drainingConfig);
+      await drainingServer.start();
+
+      // Simulate draining state
+      (drainingServer as any).isShuttingDown = true;
+
+      try {
+        const res = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+          http.get(`http://127.0.0.1:${drainingPort}/healthz`, (response) => {
+            let data = '';
+            response.on('data', (chunk) => (data += chunk));
+            response.on('end', () =>
+              resolve({ statusCode: response.statusCode || 0, body: data })
+            );
+          }).on('error', reject);
+        });
+
+        expect(res.statusCode).toBe(503);
+        const parsed = JSON.parse(res.body);
+        expect(parsed.status).toBe('DRAINING');
+      } finally {
+        (drainingServer as any).isShuttingDown = false;
+        await drainingServer.stop();
+      }
+    });
+  });
 });

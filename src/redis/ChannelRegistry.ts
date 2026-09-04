@@ -137,8 +137,14 @@ export class ChannelRegistry {
         channel,
         refCount: newCount
       });
-      await this.pubSubManager.subscribe(channel);
-      return true;
+      try {
+        await this.pubSubManager.subscribe(channel);
+        return true;
+      } catch (err) {
+        // Rollback ref count state so subsequent attempts can retry 0 -> 1 transition
+        this.channelRefCounts.delete(channel);
+        throw err;
+      }
     }
 
     // 1 -> 2+: Already subscribed, no Redis call needed
@@ -166,8 +172,14 @@ export class ChannelRegistry {
         instanceId: this.instanceId,
         channel
       });
-      await this.pubSubManager.unsubscribe(channel);
-      return true;
+      try {
+        await this.pubSubManager.unsubscribe(channel);
+        return true;
+      } catch (err) {
+        // Rollback ref count so state is consistent
+        this.channelRefCounts.set(channel, 1);
+        throw err;
+      }
     }
 
     // 2 -> 1: Still has remaining subscribers, do not unsubscribe from Redis

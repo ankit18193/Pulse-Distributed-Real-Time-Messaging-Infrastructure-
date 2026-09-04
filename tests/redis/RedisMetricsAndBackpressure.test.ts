@@ -4,6 +4,7 @@ import { RedisConnectionManager } from '../../src/redis/RedisConnectionManager.j
 import { MessageDispatcher } from '../../src/core/MessageDispatcher.js';
 import { ConnectionManager } from '../../src/core/ConnectionManager.js';
 import { RoomManager } from '../../src/core/RoomManager.js';
+import { PulseEventEnvelope } from '../../src/types/index.js';
 import RedisMock from 'ioredis-mock';
 
 describe('Redis Metrics and Bounded Backpressure', () => {
@@ -71,28 +72,46 @@ describe('Redis Metrics and Bounded Backpressure', () => {
 
       expect(pubSub.getMetrics().getInFlightCount()).toBe(2);
 
-      // 3rd concurrent publish must be rejected immediately by backpressure limit
+      // 3rd, 4th, 5th concurrent publishes must be rejected immediately by backpressure limit
       await expect(
         pubSub.publish('pulse:room:test', { msg: 3 })
       ).rejects.toThrow('Redis publish backpressure limit reached (2 in-flight)');
 
-      expect(pubSub.getMetricsSnapshot()['redis.publish.errors']).toBe(1);
+      await expect(
+        pubSub.publish('pulse:room:test', { msg: 4 })
+      ).rejects.toThrow('Redis publish backpressure limit reached (2 in-flight)');
 
-      // Resolve in-flight publishes
-      while (resolvers.length > 0) {
-        resolvers.pop()!();
-      }
-      await Promise.all([p1, p2]);
+      await expect(
+        pubSub.publish('pulse:room:test', { msg: 5 })
+      ).rejects.toThrow('Redis publish backpressure limit reached (2 in-flight)');
 
-      expect(pubSub.getMetrics().getInFlightCount()).toBe(0);
+      // Critical regression check: in-flight count MUST NOT be decremented on rejection!
+      expect(pubSub.getMetrics().getInFlightCount()).toBe(2);
+      expect(pubSub.getMetricsSnapshot()['redis.publish.errors']).toBe(3);
+
+      // 6th publish must STILL be rejected because inFlight is still at limit (2)
+      await expect(
+        pubSub.publish('pulse:room:test', { msg: 6 })
+      ).rejects.toThrow('Redis publish backpressure limit reached (2 in-flight)');
+      expect(pubSub.getMetricsSnapshot()['redis.publish.errors']).toBe(4);
+      expect(pubSub.getMetrics().getInFlightCount()).toBe(2);
+
+      // Resolve 1 of the 2 in-flight publishes -> frees 1 slot
+      resolvers.pop()!();
+      await p2;
+
+      expect(pubSub.getMetrics().getInFlightCount()).toBe(1);
 
       // Capacity freed: new publish succeeds
-      const p4Promise = pubSub.publish('pulse:room:test', { msg: 4 });
+      const p7Promise = pubSub.publish('pulse:room:test', { msg: 7 });
+      expect(pubSub.getMetrics().getInFlightCount()).toBe(2);
+
       while (resolvers.length > 0) {
         resolvers.pop()!();
       }
-      await p4Promise;
+      await Promise.all([p1, p7Promise]);
 
+      expect(pubSub.getMetrics().getInFlightCount()).toBe(0);
       expect(pubSub.getMetricsSnapshot()['redis.publish.count']).toBe(3);
     });
   });
@@ -113,7 +132,7 @@ describe('Redis Metrics and Bounded Backpressure', () => {
       });
 
       // 1. Self-echo event
-      const echoEvent = {
+      const echoEvent: PulseEventEnvelope = {
         eventId: '018f673a-4421-7299-8d18-000000000051',
         type: 'ROOM_MESSAGE',
         timestamp: Date.now(),
@@ -127,7 +146,7 @@ describe('Redis Metrics and Bounded Backpressure', () => {
       expect(pubSub.getMetricsSnapshot()['redis.echoes.suppressed']).toBe(1);
 
       // 2. Remote event (first delivery)
-      const remoteEvent = {
+      const remoteEvent: PulseEventEnvelope = {
         eventId: '018f673a-4421-7299-8d18-000000000052',
         type: 'ROOM_MESSAGE',
         timestamp: Date.now(),
