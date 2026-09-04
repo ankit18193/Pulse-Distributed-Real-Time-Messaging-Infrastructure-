@@ -10,6 +10,7 @@ import { HeartbeatManager } from './HeartbeatManager.js';
 import { IdempotencyManager } from './IdempotencyManager.js';
 import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
 import { ChannelRegistry } from '../redis/ChannelRegistry.js';
+import { PresenceManager } from '../redis/PresenceManager.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
@@ -24,6 +25,7 @@ export interface PulseServerHooks {
 
 export interface PulseServerDependencies {
   redisPubSubManager?: RedisPubSubManager;
+  presenceManager?: PresenceManager;
 }
 
 export class PulseServer {
@@ -37,6 +39,7 @@ export class PulseServer {
   private readonly hooks: PulseServerHooks;
   private readonly redisPubSubManager?: RedisPubSubManager;
   private readonly channelRegistry?: ChannelRegistry;
+  private presenceManager?: PresenceManager;
 
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
@@ -66,8 +69,25 @@ export class PulseServer {
       }, config.instanceId);
     }
 
+    if (deps.presenceManager) {
+      this.presenceManager = deps.presenceManager;
+    }
+
     if (this.redisPubSubManager) {
       this.channelRegistry = new ChannelRegistry(this.redisPubSubManager, config.instanceId);
+
+      if (typeof (this.redisPubSubManager as any).on === 'function') {
+        (this.redisPubSubManager as any).on('connected', async () => {
+          await this.handleRedisReconnect();
+        });
+      } else if (typeof (this.redisPubSubManager as any).getConnectionManager === 'function') {
+        const cm = (this.redisPubSubManager as any).getConnectionManager();
+        if (typeof cm?.on === 'function') {
+          cm.on('connected', async () => {
+            await this.handleRedisReconnect();
+          });
+        }
+      }
     }
 
     this.connectionManager = new ConnectionManager(this.channelRegistry);
@@ -82,6 +102,7 @@ export class PulseServer {
       roomManager: this.roomManager,
       idempotencyManager: this.idempotencyManager,
       redisPubSubManager: this.redisPubSubManager,
+      presenceManager: this.presenceManager,
       instanceId: config.instanceId
     });
 
@@ -94,6 +115,10 @@ export class PulseServer {
 
   public getRedisPubSubManager(): RedisPubSubManager | undefined {
     return this.redisPubSubManager;
+  }
+
+  public getPresenceManager(): PresenceManager | undefined {
+    return this.presenceManager;
   }
 
   public getChannelRegistry(): ChannelRegistry | undefined {
@@ -141,16 +166,57 @@ export class PulseServer {
       throw new Error('PulseServer is already running');
     }
 
-    if (this.redisPubSubManager && !this.redisPubSubManager.isConnected()) {
-      try {
-        await this.redisPubSubManager.connect();
-      } catch (err) {
-        logger.warn('Initial Redis connection failed; server continuing in isolated local mode', {
-          component: 'PulseServer',
-          instanceId: this.config.instanceId,
-          error: err instanceof Error ? err.message : String(err)
-        });
+    if (this.redisPubSubManager) {
+      if (!this.redisPubSubManager.isConnected()) {
+        try {
+          await this.redisPubSubManager.connect();
+        } catch (err) {
+          logger.warn('Initial Redis connection failed; server continuing in isolated local mode', {
+            component: 'PulseServer',
+            instanceId: this.config.instanceId,
+            error: err instanceof Error ? err.message : String(err)
+          });
+        }
       }
+
+      if (
+        !this.presenceManager &&
+        this.redisPubSubManager.isConnected() &&
+        typeof (this.redisPubSubManager as any).getConnectionManager === 'function'
+      ) {
+        try {
+          const redisClient = (this.redisPubSubManager as any).getConnectionManager()?.getPublisher();
+          if (redisClient) {
+            this.presenceManager = new PresenceManager(redisClient, this.config.instanceId, {
+              presenceTtlMs: this.config.presenceTtlMs,
+              presenceFlushIntervalMs: this.config.presenceFlushIntervalMs,
+              pubSubManager: this.redisPubSubManager,
+              roomsProvider: (userId: string) => {
+                const conns = this.connectionManager.getConnectionsByUserId(userId);
+                const rooms = new Set<string>();
+                for (const c of conns) {
+                  for (const r of c.getRooms()) {
+                    rooms.add(r);
+                  }
+                }
+                return Array.from(rooms);
+              }
+            });
+            this.dispatcher.setPresenceManager(this.presenceManager);
+          }
+        } catch {
+          // publisher not ready
+        }
+      }
+    }
+
+    if (this.presenceManager) {
+      this.presenceManager.startRenewalLoop(() => {
+        const conns = this.connectionManager.getAllConnections();
+        return conns
+          .filter((c) => c.userId && c.isAlive())
+          .map((c) => ({ userId: c.userId!, connectionId: c.connectionId }));
+      });
     }
 
     return new Promise((resolve, reject) => {
@@ -322,6 +388,18 @@ export class PulseServer {
     };
     connection.send(ackEnvelope);
 
+    // Register presence connection lease after successful authentication
+    if (this.presenceManager) {
+      this.presenceManager.registerConnection(userId, connectionId).catch((err) => {
+        logger.warn('Failed to register presence lease on connection established', {
+          component: 'PulseServer',
+          userId,
+          connectionId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      });
+    }
+
     if (this.hooks.onConnectionAuthenticated) {
       this.hooks.onConnectionAuthenticated(connection);
     }
@@ -349,6 +427,18 @@ export class PulseServer {
         connection.connectionId,
         connection.getRooms()
       );
+
+      // Remove presence connection lease on connection termination
+      if (this.presenceManager && connection.userId) {
+        this.presenceManager.removeConnection(connection.userId, connection.connectionId).catch((err) => {
+          logger.warn('Failed to remove presence lease on connection close', {
+            component: 'PulseServer',
+            userId: connection.userId,
+            connectionId: connection.connectionId,
+            error: err instanceof Error ? err.message : String(err)
+          });
+        });
+      }
 
       logger.info('Realtime connection closed and cleaned up', {
         component: 'PulseServer',
@@ -442,6 +532,9 @@ export class PulseServer {
   }
 
   private cleanupAndFinalize(): void {
+    if (this.presenceManager) {
+      this.presenceManager.stopRenewalLoop();
+    }
     if (this.channelRegistry) {
       this.channelRegistry.clear().catch(() => {});
     }
@@ -458,5 +551,66 @@ export class PulseServer {
       component: 'PulseServer',
       event: 'SHUTDOWN_COMPLETE'
     });
+  }
+
+  private async handleRedisReconnect(): Promise<void> {
+    if (
+      !this.presenceManager &&
+      this.redisPubSubManager?.isConnected() &&
+      typeof (this.redisPubSubManager as any).getConnectionManager === 'function'
+    ) {
+      try {
+        const redisClient = (this.redisPubSubManager as any).getConnectionManager()?.getPublisher();
+        if (redisClient) {
+          this.presenceManager = new PresenceManager(redisClient, this.config.instanceId, {
+            presenceTtlMs: this.config.presenceTtlMs,
+            presenceFlushIntervalMs: this.config.presenceFlushIntervalMs,
+            pubSubManager: this.redisPubSubManager,
+            roomsProvider: (userId: string) => {
+              const conns = this.connectionManager.getConnectionsByUserId(userId);
+              const rooms = new Set<string>();
+              for (const c of conns) {
+                for (const r of c.getRooms()) {
+                  rooms.add(r);
+                }
+              }
+              return Array.from(rooms);
+            }
+          });
+          this.dispatcher.setPresenceManager(this.presenceManager);
+          this.presenceManager.startRenewalLoop(() => {
+            const conns = this.connectionManager.getAllConnections();
+            return conns
+              .filter((c) => c.userId && c.isAlive())
+              .map((c) => ({ userId: c.userId!, connectionId: c.connectionId }));
+          });
+        }
+      } catch {
+        // publisher not ready
+      }
+    }
+
+    if (this.presenceManager) {
+      logger.info('Redis reconnected; resynchronizing active local presence leases', {
+        component: 'PulseServer',
+        instanceId: this.config.instanceId
+      });
+
+      const activeConnections = this.connectionManager.getAllConnections();
+      for (const conn of activeConnections) {
+        if (conn.userId && conn.isAlive()) {
+          try {
+            await this.presenceManager.registerConnection(conn.userId, conn.connectionId);
+          } catch (err) {
+            logger.warn('Failed to resynchronize connection presence lease on Redis reconnect', {
+              component: 'PulseServer',
+              connectionId: conn.connectionId,
+              userId: conn.userId,
+              error: err instanceof Error ? err.message : String(err)
+            });
+          }
+        }
+      }
+    }
   }
 }

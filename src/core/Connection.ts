@@ -131,4 +131,8 @@ export class Connection {
   public getIsCleanedUp(): boolean {
     return this.isCleanedUp;
   }
+
+  public isAlive(): boolean {
+    return !this.isCleanedUp && this.socket.readyState === WebSocket.OPEN;
+  }
 }
