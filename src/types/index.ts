@@ -39,7 +39,24 @@ export type EventType =
   | 'ROOM_BATCH_JOIN_ACK'
   | 'ROOM_MESSAGE'
   | 'DIRECT_MESSAGE'
+  | 'PRESENCE_UPDATE'
+  | 'ROOM_ROSTER'
   | 'DELIVERY_ACK';
+
+export type PresenceStatus = 'ONLINE' | 'OFFLINE';
+
+export interface PresenceUpdatePayload {
+  userId: string;
+  status: PresenceStatus;
+  activeConnections: number;
+  rooms?: string[];
+}
+
+export interface RoomRosterPayload {
+  roomId: string;
+  members: string[];
+  totalOnline: number;
+}
 
 export interface EventTarget {
   roomId?: string;

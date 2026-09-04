@@ -25,6 +25,8 @@ export const VALID_EVENT_TYPES: Set<EventType> = new Set([
   'ROOM_BATCH_JOIN_ACK',
   'ROOM_MESSAGE',
   'DIRECT_MESSAGE',
+  'PRESENCE_UPDATE',
+  'ROOM_ROSTER',
   'DELIVERY_ACK'
 ]);
 
