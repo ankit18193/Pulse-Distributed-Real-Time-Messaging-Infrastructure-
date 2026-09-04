@@ -60,13 +60,14 @@ export class PresenceManager {
   public async registerConnection(
     userId: string,
     connectionId: string,
-    customExpireAtMs?: number
+    customExpireAtMs?: number,
+    customNowMs?: number
   ): Promise<PresenceRegistrationResult> {
     if (!userId || !connectionId) {
       throw new Error('userId and connectionId are required for presence registration');
     }
 
-    const now = Date.now();
+    const now = customNowMs ?? Date.now();
     const expireAt = customExpireAtMs ?? now + this.presenceTtlMs;
 
     try {
@@ -115,13 +116,14 @@ export class PresenceManager {
    */
   public async removeConnection(
     userId: string,
-    connectionId: string
+    connectionId: string,
+    customNowMs?: number
   ): Promise<PresenceRemovalResult> {
     if (!userId || !connectionId) {
       throw new Error('userId and connectionId are required for presence removal');
     }
 
-    const now = Date.now();
+    const now = customNowMs ?? Date.now();
 
     try {
       const transition = await executeRemovePresence(
