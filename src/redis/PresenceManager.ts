@@ -3,6 +3,7 @@ import {
   executeRegisterPresence,
   executeRemovePresence,
   getPresenceUserKey,
+  formatPresenceMember,
   parsePresenceMember,
   DEFAULT_KEY_SAFEGUARD_TTL_SEC
 } from './PresenceLuaScripts.js';
@@ -11,6 +12,7 @@ import { logger } from '../utils/logger.js';
 
 export interface PresenceManagerOptions {
   presenceTtlMs?: number;
+  presenceFlushIntervalMs?: number;
   keySafeguardTtlSec?: number;
   maxTrackedUsers?: number;
 }
@@ -34,8 +36,13 @@ export class PresenceManager {
   private readonly redisClient: Redis;
   private readonly instanceId: string;
   private readonly presenceTtlMs: number;
+  private readonly presenceFlushIntervalMs: number;
   private readonly keySafeguardTtlSec: number;
   private readonly eventTracker: PresenceEventTracker;
+  private readonly localConnections: Map<string, { userId: string; connectionId: string }> = new Map();
+  private activeConnectionProvider?: () => Array<{ userId: string; connectionId: string }>;
+  private renewalTimer?: NodeJS.Timeout;
+  private isFlushing: boolean = false;
 
   constructor(
     redisClient: Redis,
@@ -45,12 +52,17 @@ export class PresenceManager {
     this.redisClient = redisClient;
     this.instanceId = instanceId;
     this.presenceTtlMs = options.presenceTtlMs ?? 60000;
+    this.presenceFlushIntervalMs = options.presenceFlushIntervalMs ?? 15000;
     this.keySafeguardTtlSec = options.keySafeguardTtlSec ?? DEFAULT_KEY_SAFEGUARD_TTL_SEC;
     this.eventTracker = new PresenceEventTracker({ maxUsers: options.maxTrackedUsers });
   }
 
   public getInstanceId(): string {
     return this.instanceId;
+  }
+
+  public getPresenceFlushIntervalMs(): number {
+    return this.presenceFlushIntervalMs;
   }
 
   public getEventTracker(): PresenceEventTracker {
@@ -99,6 +111,8 @@ export class PresenceManager {
 
       const activeConnections = await this.getUserConnectionCount(userId, now);
 
+      this.localConnections.set(connectionId, { userId, connectionId });
+
       logger.info('Presence connection registered', {
         component: 'PresenceManager',
         userId,
@@ -138,6 +152,8 @@ export class PresenceManager {
     if (!userId || !connectionId) {
       throw new Error('userId and connectionId are required for presence removal');
     }
+
+    this.localConnections.delete(connectionId);
 
     const now = customNowMs ?? Date.now();
 
@@ -261,5 +277,126 @@ export class PresenceManager {
       });
       return 0;
     }
+  }
+
+  /**
+   * Retrieves current active local connections tracked on this instance.
+   */
+  public getLocalActiveConnections(): Array<{ userId: string; connectionId: string }> {
+    return this.activeConnectionProvider
+      ? this.activeConnectionProvider()
+      : Array.from(this.localConnections.values());
+  }
+
+  public getLocalActiveConnectionCount(): number {
+    return this.getLocalActiveConnections().length;
+  }
+
+  /**
+   * Batched, pipelined renewal of all active local connection leases in Redis.
+   * Conceptually:
+   * local active connections -> Redis pipeline -> ZADD lease + EXPIRE key
+   * Avoids writing to Redis if there are no local active connections.
+   */
+  public async flushLeaseRenewals(nowMs: number = Date.now()): Promise<number> {
+    if (this.isFlushing) {
+      return 0;
+    }
+    this.isFlushing = true;
+
+    try {
+      const activeConnections = this.getLocalActiveConnections();
+      if (activeConnections.length === 0) {
+        return 0;
+      }
+
+      const expireAt = nowMs + this.presenceTtlMs;
+      const pipeline = this.redisClient.pipeline();
+      const touchedUserKeys = new Set<string>();
+
+      for (const conn of activeConnections) {
+        const userKey = getPresenceUserKey(conn.userId);
+        const member = formatPresenceMember(this.instanceId, conn.connectionId);
+        pipeline.zadd(userKey, expireAt, member);
+        touchedUserKeys.add(userKey);
+      }
+
+      for (const userKey of touchedUserKeys) {
+        pipeline.expire(userKey, this.keySafeguardTtlSec);
+      }
+
+      await pipeline.exec();
+
+      logger.debug('Flushed presence lease renewals via pipeline', {
+        component: 'PresenceManager',
+        instanceId: this.instanceId,
+        renewedLeases: activeConnections.length,
+        usersCount: touchedUserKeys.size
+      });
+
+      return activeConnections.length;
+    } catch (err) {
+      logger.warn('Failed to flush presence lease renewals to Redis', {
+        component: 'PresenceManager',
+        instanceId: this.instanceId,
+        error: err instanceof Error ? err.message : String(err)
+      });
+      return 0;
+    } finally {
+      this.isFlushing = false;
+    }
+  }
+
+  /**
+   * Starts the background lease renewal loop running every PRESENCE_FLUSH_INTERVAL_MS.
+   */
+  public startRenewalLoop(provider?: () => Array<{ userId: string; connectionId: string }>): void {
+    if (provider) {
+      this.activeConnectionProvider = provider;
+    }
+
+    if (this.renewalTimer) {
+      clearInterval(this.renewalTimer);
+      this.renewalTimer = undefined;
+    }
+
+    this.renewalTimer = setInterval(() => {
+      this.flushLeaseRenewals().catch((err) => {
+        logger.warn('Error in background presence renewal loop', {
+          component: 'PresenceManager',
+          instanceId: this.instanceId,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      });
+    }, this.presenceFlushIntervalMs);
+
+    if (typeof this.renewalTimer.unref === 'function') {
+      this.renewalTimer.unref();
+    }
+
+    logger.info('Started presence lease renewal loop', {
+      component: 'PresenceManager',
+      instanceId: this.instanceId,
+      flushIntervalMs: this.presenceFlushIntervalMs,
+      leaseTtlMs: this.presenceTtlMs
+    });
+  }
+
+  /**
+   * Cleanly stops the background lease renewal loop.
+   */
+  public stopRenewalLoop(): void {
+    if (this.renewalTimer) {
+      clearInterval(this.renewalTimer);
+      this.renewalTimer = undefined;
+      logger.info('Stopped presence lease renewal loop', {
+        component: 'PresenceManager',
+        instanceId: this.instanceId
+      });
+    }
+  }
+
+  public isRenewalLoopRunning(): boolean {
+    return this.renewalTimer !== undefined;
   }
 }
