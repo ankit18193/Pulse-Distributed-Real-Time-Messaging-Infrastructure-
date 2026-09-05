@@ -7,6 +7,7 @@ import { WebSocket } from 'ws';
 import { Authenticator } from '../auth/Authenticator.js';
 import { StatsAggregator } from './StatsAggregator.js';
 import { BenchmarkConfig, BenchmarkProfile, BenchmarkResult } from './types.js';
+import { RampProfile } from './profiles/RampProfile.js';
 
 export const SAFE_MAX_CONNECTIONS = 5000;
 export const DEFAULT_AUTH_SECRET = 'dev-secret-key-pulse-messaging-jwt';
@@ -203,7 +204,8 @@ export class BenchmarkRunner {
   }
 
   private async runRampWorkload(): Promise<void> {
-    await this.runBasicWorkload();
+    const profile = new RampProfile(this.config, this.aggregator);
+    await profile.execute();
   }
 
   public static formatReport(result: BenchmarkResult): string {
