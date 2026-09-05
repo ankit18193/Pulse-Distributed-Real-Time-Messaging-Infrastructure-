@@ -45,6 +45,10 @@ export class RedisPubSubManager extends EventEmitter {
     return this.metrics.getSnapshot();
   }
 
+  public setMetricsRegistry(metricsRegistry: any): void {
+    this.metrics.setMetricsRegistry(metricsRegistry);
+  }
+
   public async connect(): Promise<void> {
     await this.connectionManager.connect();
     this.metrics.setConnectionState('connected');

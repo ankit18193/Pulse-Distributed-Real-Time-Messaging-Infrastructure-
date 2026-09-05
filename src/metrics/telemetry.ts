@@ -105,3 +105,52 @@ export function registerWebSocketMetrics(registry: PulseMetricsRegistry): void {
     );
   }
 }
+
+export function registerRedisMetrics(registry: PulseMetricsRegistry): void {
+  if (!registry.getMetric('pulse_redis_publish_total')) {
+    registry.register(
+      new Counter({
+        name: 'pulse_redis_publish_total',
+        help: 'Total Redis publishes attempted and completed by status',
+        labelNames: ['status']
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_redis_publish_duration_seconds')) {
+    registry.register(
+      new Histogram({
+        name: 'pulse_redis_publish_duration_seconds',
+        help: 'Redis PUBLISH command latency in seconds'
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_redis_publish_in_flight')) {
+    registry.register(
+      new Gauge({
+        name: 'pulse_redis_publish_in_flight',
+        help: 'Current in-flight Redis PUBLISH commands'
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_redis_subscriptions_active')) {
+    registry.register(
+      new Gauge({
+        name: 'pulse_redis_subscriptions_active',
+        help: 'Active Redis channel subscriptions'
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_redis_connection_state')) {
+    registry.register(
+      new Gauge({
+        name: 'pulse_redis_connection_state',
+        help: 'Redis connection state (1 = connected, 0 = disconnected)'
+      })
+    );
+  }
+}
+

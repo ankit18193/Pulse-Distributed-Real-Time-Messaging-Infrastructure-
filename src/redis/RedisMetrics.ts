@@ -1,3 +1,6 @@
+import type { PulseMetricsRegistry } from '../metrics/PulseMetricsRegistry.js';
+import { registerRedisMetrics } from '../metrics/telemetry.js';
+
 export interface RedisMetricsSnapshot {
   'redis.publish.count': number;
   'redis.publish.errors': number;
@@ -20,6 +23,8 @@ export interface RedisMetricsSnapshot {
 }
 
 export class RedisMetrics {
+  private metricsRegistry?: PulseMetricsRegistry;
+
   private publishCount = 0;
   private publishErrors = 0;
   private publishLatencyTotalMs = 0;
@@ -42,24 +47,46 @@ export class RedisMetrics {
   private presencePruneLatencyMs = 0;
   private presenceLeaseRenewals = 0;
 
+  constructor(metricsRegistry?: PulseMetricsRegistry) {
+    this.metricsRegistry = metricsRegistry;
+    if (metricsRegistry) {
+      registerRedisMetrics(metricsRegistry);
+    }
+  }
+
+  public setMetricsRegistry(metricsRegistry: PulseMetricsRegistry): void {
+    this.metricsRegistry = metricsRegistry;
+    registerRedisMetrics(metricsRegistry);
+  }
+
+  public getMetricsRegistry(): PulseMetricsRegistry | undefined {
+    return this.metricsRegistry;
+  }
+
   public recordPublishStart(): void {
     this.inFlightPublishes++;
+    this.metricsRegistry?.getGauge('pulse_redis_publish_in_flight')?.set(this.inFlightPublishes);
   }
 
   public recordPublishRejected(): void {
     this.publishErrors++;
+    this.metricsRegistry?.getCounter('pulse_redis_publish_total')?.inc({ status: 'error' });
   }
 
   public recordPublishEnd(durationMs: number, error?: boolean): void {
     this.inFlightPublishes = Math.max(0, this.inFlightPublishes - 1);
+    this.metricsRegistry?.getGauge('pulse_redis_publish_in_flight')?.set(this.inFlightPublishes);
     if (error) {
       this.publishErrors++;
+      this.metricsRegistry?.getCounter('pulse_redis_publish_total')?.inc({ status: 'error' });
     } else {
       this.publishCount++;
       this.publishLatencyTotalMs += durationMs;
       if (durationMs > this.publishLatencyMaxMs) {
         this.publishLatencyMaxMs = durationMs;
       }
+      this.metricsRegistry?.getCounter('pulse_redis_publish_total')?.inc({ status: 'success' });
+      this.metricsRegistry?.getHistogram('pulse_redis_publish_duration_seconds')?.record(durationMs / 1000);
     }
   }
 
@@ -81,10 +108,12 @@ export class RedisMetrics {
 
   public setChannelsActive(count: number): void {
     this.channelsActive = count;
+    this.metricsRegistry?.getGauge('pulse_redis_subscriptions_active')?.set(count);
   }
 
   public setConnectionState(state: string): void {
     this.connectionState = state;
+    this.metricsRegistry?.getGauge('pulse_redis_connection_state')?.set(state === 'connected' ? 1 : 0);
   }
 
   public getInFlightCount(): number {
@@ -162,5 +191,8 @@ export class RedisMetrics {
     this.presenceEventsReceived = 0;
     this.presencePruneLatencyMs = 0;
     this.presenceLeaseRenewals = 0;
+    this.metricsRegistry?.getGauge('pulse_redis_publish_in_flight')?.set(0);
+    this.metricsRegistry?.getGauge('pulse_redis_subscriptions_active')?.set(0);
+    this.metricsRegistry?.getGauge('pulse_redis_connection_state')?.set(0);
   }
 }

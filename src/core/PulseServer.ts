@@ -122,6 +122,12 @@ export class PulseServer {
     }
 
     if (this.redisPubSubManager) {
+      if (typeof (this.redisPubSubManager as any).setMetricsRegistry === 'function') {
+        (this.redisPubSubManager as any).setMetricsRegistry(this.metricsRegistry);
+      } else if (typeof (this.redisPubSubManager as any).getMetrics === 'function') {
+        (this.redisPubSubManager as any).getMetrics()?.setMetricsRegistry?.(this.metricsRegistry);
+      }
+
       this.channelRegistry = new ChannelRegistry(this.redisPubSubManager, config.instanceId);
 
       if (typeof (this.redisPubSubManager as any).on === 'function') {
