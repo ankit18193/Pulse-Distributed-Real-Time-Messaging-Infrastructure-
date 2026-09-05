@@ -14,7 +14,7 @@ import { BackpressureProfile } from './profiles/BackpressureProfile.js';
 import { PresenceChurnProfile } from './profiles/PresenceChurnProfile.js';
 
 export const SAFE_MAX_CONNECTIONS = 5000;
-export const DEFAULT_AUTH_SECRET = 'dev-secret-key-pulse-messaging-jwt';
+export const DEFAULT_AUTH_SECRET = 'pulse-dev-secret-key-32chars-min';
 
 export class BenchmarkRunner {
   private readonly config: BenchmarkConfig;
@@ -69,7 +69,7 @@ export class BenchmarkRunner {
 
     const messageRate = typeof partial.messageRate === 'number' ? partial.messageRate : 10;
     const rooms = typeof partial.rooms === 'number' ? partial.rooms : 5;
-    const authSecret = partial.authSecret || DEFAULT_AUTH_SECRET;
+    const authSecret = partial.authSecret || process.env.AUTH_SECRET || DEFAULT_AUTH_SECRET;
     const json = partial.json === true;
 
     return {
@@ -118,6 +118,9 @@ export class BenchmarkRunner {
         this.activeSockets.add(ws);
         this.aggregator.recordConnectionSuccess(latencyMs);
         ws.removeListener('error', onError);
+        ws.on('error', (err) => {
+          this.aggregator.recordError(`Socket error for ${userId}: ${err.message}`);
+        });
         resolve(ws);
       };
 
@@ -158,12 +161,20 @@ export class BenchmarkRunner {
           break;
         case 'broadcast': {
           const profile = new BroadcastProfile(this.config, this.aggregator);
-          await profile.execute();
+          try {
+            await profile.execute();
+          } finally {
+            await profile.cleanup();
+          }
           break;
         }
         case 'direct': {
           const profile = new DirectProfile(this.config, this.aggregator);
-          await profile.execute();
+          try {
+            await profile.execute();
+          } finally {
+            await profile.cleanup();
+          }
           break;
         }
         case 'backpressure': {
@@ -233,7 +244,11 @@ export class BenchmarkRunner {
 
   private async runRampWorkload(): Promise<void> {
     const profile = new RampProfile(this.config, this.aggregator);
-    await profile.execute();
+    try {
+      await profile.execute();
+    } finally {
+      profile.cleanup();
+    }
   }
 
   public static formatReport(result: BenchmarkResult): string {
