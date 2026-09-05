@@ -66,6 +66,17 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     overrides.presenceFlushIntervalMs ??
     parseInt(process.env.PRESENCE_FLUSH_INTERVAL_MS || '15000', 10);
 
+  // Observability & Metrics configuration (Phase 6)
+  const metricsEnabled =
+    overrides.metricsEnabled ??
+    (process.env.METRICS_ENABLED !== undefined
+      ? process.env.METRICS_ENABLED === 'true'
+      : true);
+  const metricsPath = overrides.metricsPath ?? process.env.METRICS_PATH ?? '/metrics';
+  const eventLoopMonitorIntervalMs =
+    overrides.eventLoopMonitorIntervalMs ??
+    parseInt(process.env.EVENT_LOOP_MONITOR_INTERVAL_MS || '10000', 10);
+
   if (isNaN(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid PORT configuration: ${port}`);
   }
@@ -122,6 +133,9 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     redisRetryInitialDelayMs,
     redisRetryMaxDelayMs,
     presenceTtlMs,
-    presenceFlushIntervalMs
+    presenceFlushIntervalMs,
+    metricsEnabled,
+    metricsPath,
+    eventLoopMonitorIntervalMs
   };
 }

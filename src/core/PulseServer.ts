@@ -11,6 +11,7 @@ import { IdempotencyManager } from './IdempotencyManager.js';
 import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
 import { ChannelRegistry } from '../redis/ChannelRegistry.js';
 import { PresenceManager } from '../redis/PresenceManager.js';
+import { PulseMetricsRegistry, PrometheusSerializer } from '../metrics/index.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
@@ -26,6 +27,7 @@ export interface PulseServerHooks {
 export interface PulseServerDependencies {
   redisPubSubManager?: RedisPubSubManager;
   presenceManager?: PresenceManager;
+  metricsRegistry?: PulseMetricsRegistry;
 }
 
 export class PulseServer {
@@ -40,6 +42,7 @@ export class PulseServer {
   private readonly redisPubSubManager?: RedisPubSubManager;
   private readonly channelRegistry?: ChannelRegistry;
   private presenceManager?: PresenceManager;
+  private readonly metricsRegistry: PulseMetricsRegistry;
 
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
@@ -54,6 +57,7 @@ export class PulseServer {
     this.config = config;
     this.hooks = hooks;
     this.authenticator = new Authenticator(config.authSecret);
+    this.metricsRegistry = deps.metricsRegistry ?? new PulseMetricsRegistry();
 
     if (deps.redisPubSubManager) {
       this.redisPubSubManager = deps.redisPubSubManager;
@@ -119,6 +123,10 @@ export class PulseServer {
 
   public getPresenceManager(): PresenceManager | undefined {
     return this.presenceManager;
+  }
+
+  public getMetricsRegistry(): PulseMetricsRegistry {
+    return this.metricsRegistry;
   }
 
   public getChannelRegistry(): ChannelRegistry | undefined {
@@ -296,7 +304,10 @@ export class PulseServer {
   }
 
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-    if (req.url === '/healthz' || req.url === '/health') {
+    const rawUrl = req.url || '';
+    const pathname = rawUrl.split('?')[0];
+
+    if (pathname === '/healthz' || pathname === '/health') {
       const isRedisDegraded = Boolean(
         this.redisPubSubManager && !this.redisPubSubManager.isConnected()
       );
@@ -339,6 +350,26 @@ export class PulseServer {
         'Content-Type': 'application/json'
       });
       res.end(JSON.stringify(healthData));
+      return;
+    }
+
+    if (
+      req.method === 'GET' &&
+      (pathname === '/metrics' || (this.config.metricsPath && pathname === this.config.metricsPath))
+    ) {
+      if (this.config.metricsEnabled === false) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Metrics endpoint is disabled' }));
+        return;
+      }
+
+      const metricsText = PrometheusSerializer.serialize(this.metricsRegistry);
+      res.writeHead(200, {
+        'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+        'Content-Length': Buffer.byteLength(metricsText),
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
+      });
+      res.end(metricsText);
       return;
     }
 
