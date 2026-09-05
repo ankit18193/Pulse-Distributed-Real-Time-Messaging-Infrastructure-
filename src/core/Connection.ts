@@ -117,6 +117,21 @@ export class Connection {
     }
   }
 
+  public isHeartbeatTimedOut: boolean = false;
+
+  public terminate(): void {
+    try {
+      this.socket.terminate();
+    } catch (err) {
+      logger.error('Error terminating socket', {
+        component: 'Connection',
+        event: 'TERMINATE_ERROR',
+        connectionId: this.connectionId,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+
   public joinRoom(roomId: string): void {
     this.rooms.add(roomId);
   }

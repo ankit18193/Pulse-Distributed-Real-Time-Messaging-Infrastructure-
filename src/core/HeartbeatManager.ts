@@ -74,6 +74,12 @@ export class HeartbeatManager {
 
       // Stale connection detection: no activity or pong within interval + timeout
       if (elapsedSinceLastSeen > this.intervalMs + this.timeoutMs) {
+        if (conn.isHeartbeatTimedOut) {
+          // Half-open socket failed to close via handshake; forcibly terminate TCP handle
+          conn.terminate();
+          continue;
+        }
+
         logger.warn('Dead connection detected via heartbeat timeout; reaping socket', {
           component: 'HeartbeatManager',
           event: 'HEARTBEAT_TIMEOUT',
@@ -83,7 +89,18 @@ export class HeartbeatManager {
           thresholdMs: this.intervalMs + this.timeoutMs
         });
 
+        conn.isHeartbeatTimedOut = true;
         conn.close(1002, 'Heartbeat timeout: connection unresponsive');
+
+        // Schedule fallback termination if peer is half-open / blackholed and fails to handshake close
+        const fallbackTimer = setTimeout(() => {
+          if ((conn as any).socket?.readyState === 2 /* CLOSING */ || (conn as any).socket?.readyState === 1 /* OPEN */) {
+            conn.terminate();
+          }
+        }, 150);
+        if (typeof fallbackTimer.unref === 'function') {
+          fallbackTimer.unref();
+        }
         continue;
       }
 

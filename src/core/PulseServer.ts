@@ -137,11 +137,25 @@ export class PulseServer {
         (this.redisPubSubManager as any).on('connected', async () => {
           await this.handleRedisReconnect();
         });
+        (this.redisPubSubManager as any).on('error', (err: unknown) => {
+          logger.warn('Redis connection reported error in PulseServer', {
+            component: 'PulseServer',
+            instanceId: config.instanceId,
+            error: err instanceof Error ? err.message : String(err)
+          });
+        });
       } else if (typeof (this.redisPubSubManager as any).getConnectionManager === 'function') {
         const cm = (this.redisPubSubManager as any).getConnectionManager();
         if (typeof cm?.on === 'function') {
           cm.on('connected', async () => {
             await this.handleRedisReconnect();
+          });
+          cm.on('error', (err: unknown) => {
+            logger.warn('Redis connection manager reported error in PulseServer', {
+              component: 'PulseServer',
+              instanceId: config.instanceId,
+              error: err instanceof Error ? err.message : String(err)
+            });
           });
         }
       }
@@ -595,7 +609,11 @@ export class PulseServer {
         closeReason = 'slow_consumer';
       } else if (code === 1001) {
         closeReason = 'server_shutdown';
-      } else if (code === 4000 || reason.toString().toLowerCase().includes('heartbeat')) {
+      } else if (
+        code === 4000 ||
+        connection.isHeartbeatTimedOut ||
+        reason.toString().toLowerCase().includes('heartbeat')
+      ) {
         closeReason = 'heartbeat_timeout';
       }
       this.metricsRegistry.getCounter('pulse_connections_closed_total')?.inc({ reason: closeReason });
@@ -643,25 +661,20 @@ export class PulseServer {
     });
   }
 
-  public async stop(options: { gracePeriodMs?: number } = {}): Promise<void> {
-    if (!this.isRunning) {
+  public drain(): void {
+    if (this.isShuttingDown) {
       return;
     }
 
     this.isShuttingDown = true;
-    const gracePeriodMs = options.gracePeriodMs ?? 2000;
 
-    logger.info('Initiating graceful shutdown for PulseServer...', {
+    logger.info('Initiating graceful draining for PulseServer...', {
       component: 'PulseServer',
-      event: 'SHUTDOWN_INITIATED',
-      activeConnections: this.connectionManager.getCount(),
-      gracePeriodMs
+      event: 'DRAINING_INITIATED',
+      activeConnections: this.connectionManager.getCount()
     });
 
-    // 1. Stop heartbeat manager sweeps
-    this.heartbeatManager.stop();
-
-    // 2. Notify all connected clients with SYS_SHUTDOWN frame
+    // Notify all connected clients with SYS_SHUTDOWN frame
     const shutdownEnvelope: PulseEventEnvelope = {
       eventId: generateUUIDv7(),
       type: 'SYS_SHUTDOWN',
@@ -676,6 +689,31 @@ export class PulseServer {
     const activeConnections = this.connectionManager.getAllConnections();
     for (const conn of activeConnections) {
       conn.send(shutdownEnvelope);
+    }
+  }
+
+  public async stop(options: { gracePeriodMs?: number } = {}): Promise<void> {
+    if (!this.isRunning) {
+      return;
+    }
+
+    if (!this.isShuttingDown) {
+      this.drain();
+    }
+    const gracePeriodMs = options.gracePeriodMs ?? 2000;
+
+    logger.info('Initiating graceful shutdown for PulseServer...', {
+      component: 'PulseServer',
+      event: 'SHUTDOWN_INITIATED',
+      activeConnections: this.connectionManager.getCount(),
+      gracePeriodMs
+    });
+
+    // 1. Stop heartbeat manager sweeps
+    this.heartbeatManager.stop();
+
+    const activeConnections = this.connectionManager.getAllConnections();
+    for (const conn of activeConnections) {
       // Close socket with RFC 6455 code 1001 (Going Away)
       conn.close(1001, 'Server shutting down');
     }

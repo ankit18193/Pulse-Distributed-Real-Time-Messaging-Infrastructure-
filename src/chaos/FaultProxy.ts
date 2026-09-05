@@ -13,6 +13,7 @@ interface SocketPair {
   targetSocket: net.Socket;
   clientFilter: WebSocketFrameFilter;
   targetFilter: WebSocketFrameFilter;
+  handshakeComplete: boolean;
 }
 
 /**
@@ -220,7 +221,8 @@ export class FaultProxy {
       clientSocket,
       targetSocket,
       clientFilter: new WebSocketFrameFilter(this.frameDropPredicate),
-      targetFilter: new WebSocketFrameFilter(this.frameDropPredicate)
+      targetFilter: new WebSocketFrameFilter(this.frameDropPredicate),
+      handshakeComplete: this.options.mode !== 'websocket'
     };
 
     this.activePairs.add(pair);
@@ -244,39 +246,75 @@ export class FaultProxy {
 
     // Forward client -> target
     clientSocket.on('data', (chunk) => {
-      this.forwardTraffic(chunk, pair.clientFilter, targetSocket);
+      this.forwardClientTraffic(pair, chunk);
     });
 
     // Forward target -> client
     targetSocket.on('data', (chunk) => {
-      this.forwardTraffic(chunk, pair.targetFilter, clientSocket);
+      this.forwardTargetTraffic(pair, chunk);
     });
   }
 
-  private forwardTraffic(
-    chunk: Buffer,
-    filter: WebSocketFrameFilter,
-    destinationSocket: net.Socket
-  ): void {
-    // 1. If severed or blackhole, silently discard
-    if (this.state === 'SEVERED' || this.state === 'BLACKHOLE') {
+  private forwardClientTraffic(pair: SocketPair, chunk: Buffer): void {
+    if (this.state === 'SEVERED' || this.state === 'BLACKHOLE') return;
+    if (pair.targetSocket.destroyed || !pair.targetSocket.writable) return;
+
+    if (this.options.mode !== 'websocket') {
+      this.sendToSocket(pair.targetSocket, [chunk]);
       return;
     }
 
-    // 2. If destination is not writable, skip
+    if (!pair.handshakeComplete) {
+      // In websocket mode, initial client request is HTTP GET / Upgrade - forward raw
+      this.sendToSocket(pair.targetSocket, [chunk]);
+      return;
+    }
+
+    const buffers = pair.clientFilter.processChunk(chunk);
+    if (buffers.length > 0) {
+      this.sendToSocket(pair.targetSocket, buffers);
+    }
+  }
+
+  private forwardTargetTraffic(pair: SocketPair, chunk: Buffer): void {
+    if (this.state === 'SEVERED' || this.state === 'BLACKHOLE') return;
+    if (pair.clientSocket.destroyed || !pair.clientSocket.writable) return;
+
+    if (this.options.mode !== 'websocket') {
+      this.sendToSocket(pair.clientSocket, [chunk]);
+      return;
+    }
+
+    if (!pair.handshakeComplete) {
+      // Look for HTTP 101 Switching Protocols header termination (\r\n\r\n)
+      const headerEndIdx = chunk.indexOf('\r\n\r\n');
+      if (headerEndIdx !== -1) {
+        pair.handshakeComplete = true;
+        const httpHeaderBytes = chunk.subarray(0, headerEndIdx + 4);
+        const trailingBytes = chunk.subarray(headerEndIdx + 4);
+
+        this.sendToSocket(pair.clientSocket, [httpHeaderBytes]);
+
+        if (trailingBytes.length > 0) {
+          const frameBuffers = pair.targetFilter.processChunk(trailingBytes);
+          if (frameBuffers.length > 0) {
+            this.sendToSocket(pair.clientSocket, frameBuffers);
+          }
+        }
+      } else {
+        this.sendToSocket(pair.clientSocket, [chunk]);
+      }
+      return;
+    }
+
+    const buffers = pair.targetFilter.processChunk(chunk);
+    if (buffers.length > 0) {
+      this.sendToSocket(pair.clientSocket, buffers);
+    }
+  }
+
+  private sendToSocket(destinationSocket: net.Socket, buffersToSend: Buffer[]): void {
     if (destinationSocket.destroyed || !destinationSocket.writable) {
-      return;
-    }
-
-    // 3. Process through frame filter if in websocket mode
-    let buffersToSend: Buffer[];
-    if (this.options.mode === 'websocket') {
-      buffersToSend = filter.processChunk(chunk);
-    } else {
-      buffersToSend = [chunk];
-    }
-
-    if (buffersToSend.length === 0) {
       return;
     }
 
