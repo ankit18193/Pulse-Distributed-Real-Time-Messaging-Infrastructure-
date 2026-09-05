@@ -10,6 +10,8 @@ import { BenchmarkConfig, BenchmarkProfile, BenchmarkResult } from './types.js';
 import { RampProfile } from './profiles/RampProfile.js';
 import { BroadcastProfile } from './profiles/BroadcastProfile.js';
 import { DirectProfile } from './profiles/DirectProfile.js';
+import { BackpressureProfile } from './profiles/BackpressureProfile.js';
+import { PresenceChurnProfile } from './profiles/PresenceChurnProfile.js';
 
 export const SAFE_MAX_CONNECTIONS = 5000;
 export const DEFAULT_AUTH_SECRET = 'dev-secret-key-pulse-messaging-jwt';
@@ -164,8 +166,24 @@ export class BenchmarkRunner {
           await profile.execute();
           break;
         }
-        case 'presence':
-        case 'backpressure':
+        case 'backpressure': {
+          const profile = new BackpressureProfile(this.config, this.aggregator);
+          try {
+            await profile.execute();
+          } finally {
+            await profile.cleanup();
+          }
+          break;
+        }
+        case 'presence': {
+          const profile = new PresenceChurnProfile(this.config, this.aggregator);
+          try {
+            await profile.execute();
+          } finally {
+            profile.cleanup();
+          }
+          break;
+        }
         default:
           await this.runBasicWorkload();
           break;
