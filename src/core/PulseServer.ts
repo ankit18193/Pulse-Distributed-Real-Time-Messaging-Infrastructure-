@@ -11,7 +11,7 @@ import { IdempotencyManager } from './IdempotencyManager.js';
 import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
 import { ChannelRegistry } from '../redis/ChannelRegistry.js';
 import { PresenceManager } from '../redis/PresenceManager.js';
-import { PulseMetricsRegistry, PrometheusSerializer } from '../metrics/index.js';
+import { PulseMetricsRegistry, PrometheusSerializer, EventLoopMonitor, Gauge } from '../metrics/index.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
@@ -43,6 +43,12 @@ export class PulseServer {
   private readonly channelRegistry?: ChannelRegistry;
   private presenceManager?: PresenceManager;
   private readonly metricsRegistry: PulseMetricsRegistry;
+  private eventLoopMonitor: EventLoopMonitor | null = null;
+  private eventLoopTimer: NodeJS.Timeout | null = null;
+  private gaugeEventLoopMean: Gauge | null = null;
+  private gaugeEventLoopP50: Gauge | null = null;
+  private gaugeEventLoopP99: Gauge | null = null;
+  private gaugeEventLoopMax: Gauge | null = null;
 
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
@@ -58,6 +64,42 @@ export class PulseServer {
     this.hooks = hooks;
     this.authenticator = new Authenticator(config.authSecret);
     this.metricsRegistry = deps.metricsRegistry ?? new PulseMetricsRegistry();
+
+    if (this.config.metricsEnabled !== false) {
+      this.gaugeEventLoopMean = (this.metricsRegistry.getMetric('pulse_event_loop_lag_seconds') as Gauge) ??
+        new Gauge({
+          name: 'pulse_event_loop_lag_seconds',
+          help: 'Current mean Node.js event-loop lag in seconds'
+        });
+      this.gaugeEventLoopP50 = (this.metricsRegistry.getMetric('pulse_event_loop_lag_p50_seconds') as Gauge) ??
+        new Gauge({
+          name: 'pulse_event_loop_lag_p50_seconds',
+          help: 'Node.js event-loop lag 50th percentile in seconds'
+        });
+      this.gaugeEventLoopP99 = (this.metricsRegistry.getMetric('pulse_event_loop_lag_p99_seconds') as Gauge) ??
+        new Gauge({
+          name: 'pulse_event_loop_lag_p99_seconds',
+          help: 'Node.js event-loop lag 99th percentile in seconds'
+        });
+      this.gaugeEventLoopMax = (this.metricsRegistry.getMetric('pulse_event_loop_lag_max_seconds') as Gauge) ??
+        new Gauge({
+          name: 'pulse_event_loop_lag_max_seconds',
+          help: 'Peak Node.js event-loop lag in seconds'
+        });
+
+      if (!this.metricsRegistry.getMetric('pulse_event_loop_lag_seconds')) {
+        this.metricsRegistry.register(this.gaugeEventLoopMean);
+      }
+      if (!this.metricsRegistry.getMetric('pulse_event_loop_lag_p50_seconds')) {
+        this.metricsRegistry.register(this.gaugeEventLoopP50);
+      }
+      if (!this.metricsRegistry.getMetric('pulse_event_loop_lag_p99_seconds')) {
+        this.metricsRegistry.register(this.gaugeEventLoopP99);
+      }
+      if (!this.metricsRegistry.getMetric('pulse_event_loop_lag_max_seconds')) {
+        this.metricsRegistry.register(this.gaugeEventLoopMax);
+      }
+    }
 
     if (deps.redisPubSubManager) {
       this.redisPubSubManager = deps.redisPubSubManager;
@@ -127,6 +169,21 @@ export class PulseServer {
 
   public getMetricsRegistry(): PulseMetricsRegistry {
     return this.metricsRegistry;
+  }
+
+  public getEventLoopMonitor(): EventLoopMonitor | null {
+    return this.eventLoopMonitor;
+  }
+
+  public updateEventLoopMetrics(): void {
+    if (!this.eventLoopMonitor || !this.eventLoopMonitor.isActive()) {
+      return;
+    }
+    const metrics = this.eventLoopMonitor.getMetrics();
+    this.gaugeEventLoopMean?.set(metrics.meanSec);
+    this.gaugeEventLoopP50?.set(metrics.p50Sec);
+    this.gaugeEventLoopP99?.set(metrics.p99Sec);
+    this.gaugeEventLoopMax?.set(metrics.maxSec);
   }
 
   public getChannelRegistry(): ChannelRegistry | undefined {
@@ -286,6 +343,22 @@ export class PulseServer {
           this.isRunning = true;
           this.heartbeatManager.start();
 
+          if (this.config.metricsEnabled !== false) {
+            if (!this.eventLoopMonitor) {
+              this.eventLoopMonitor = new EventLoopMonitor();
+            }
+            this.eventLoopMonitor.start(20);
+
+            const intervalMs = this.config.eventLoopMonitorIntervalMs || 10000;
+            this.eventLoopTimer = setInterval(() => {
+              this.updateEventLoopMetrics();
+              this.eventLoopMonitor?.reset();
+            }, intervalMs);
+            if (typeof this.eventLoopTimer.unref === 'function') {
+              this.eventLoopTimer.unref();
+            }
+          }
+
           logger.info('Pulse Realtime Server started successfully', {
             component: 'PulseServer',
             event: 'SERVER_STARTED',
@@ -363,6 +436,7 @@ export class PulseServer {
         return;
       }
 
+      this.updateEventLoopMetrics();
       const metricsText = PrometheusSerializer.serialize(this.metricsRegistry);
       res.writeHead(200, {
         'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
@@ -570,6 +644,14 @@ export class PulseServer {
   }
 
   private cleanupAndFinalize(): void {
+    if (this.eventLoopTimer) {
+      clearInterval(this.eventLoopTimer);
+      this.eventLoopTimer = null;
+    }
+    if (this.eventLoopMonitor) {
+      this.eventLoopMonitor.stop();
+      this.eventLoopMonitor = null;
+    }
     if (this.presenceManager) {
       this.presenceManager.stopRenewalLoop();
     }
