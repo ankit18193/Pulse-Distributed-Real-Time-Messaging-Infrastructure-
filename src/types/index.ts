@@ -25,6 +25,9 @@ export interface PulseConfig {
   maxBufferedAmountBytes?: number;
   presenceTtlMs?: number;
   presenceFlushIntervalMs?: number;
+  metricsEnabled?: boolean;
+  metricsPath?: string;
+  eventLoopMonitorIntervalMs?: number;
 }
 
 export type EventType =
@@ -76,6 +79,7 @@ export interface PulseEventEnvelope<T = unknown> {
   correlationId?: string;
   ackRequired?: boolean;
   originInstanceId?: string;
+  originTimestampMs?: number;
 }
 
 export interface ConnectionContext {
@@ -93,3 +97,5 @@ export interface PulseErrorPayload {
   correlationId?: string;
   details?: Record<string, unknown>;
 }
+
+export * from '../metrics/types.js';
