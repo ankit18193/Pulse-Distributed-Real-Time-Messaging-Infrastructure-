@@ -426,6 +426,45 @@ export class PulseServer {
       return;
     }
 
+    if (pathname === '/readyz') {
+      const isRedisDegraded = Boolean(
+        this.config.redisEnabled &&
+          (!this.redisPubSubManager || !this.redisPubSubManager.isConnected())
+      );
+
+      let ready = true;
+      let status: 'READY' | 'DRAINING' | 'NOT_READY' = 'READY';
+      let statusCode = 200;
+      let reason: string | undefined = undefined;
+
+      if (this.isShuttingDown) {
+        ready = false;
+        status = 'DRAINING';
+        statusCode = 503;
+        reason = 'Server is draining connections';
+      } else if (isRedisDegraded) {
+        ready = false;
+        status = 'NOT_READY';
+        statusCode = 503;
+        reason = 'Redis is enabled but disconnected';
+      }
+
+      const readyData = {
+        ready,
+        status,
+        instanceId: this.config.instanceId,
+        timestamp: Date.now(),
+        ...(reason ? { reason } : {})
+      };
+
+      res.writeHead(statusCode, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
+      });
+      res.end(JSON.stringify(readyData));
+      return;
+    }
+
     if (
       req.method === 'GET' &&
       (pathname === '/metrics' || (this.config.metricsPath && pathname === this.config.metricsPath))
