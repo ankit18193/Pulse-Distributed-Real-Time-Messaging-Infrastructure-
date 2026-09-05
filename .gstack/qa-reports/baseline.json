@@ -1,29 +1,42 @@
 {
-  "date": "2026-09-02",
+  "date": "2026-09-05",
   "service": "pulse-realtime",
   "version": "0.1.0",
-  "healthScore": 98,
+  "commit": "65e3f7e",
+  "healthScore": 99,
   "testResults": {
-    "totalSuites": 19,
-    "passedSuites": 19,
-    "totalTests": 68,
-    "passedTests": 68,
+    "totalSuites": 63,
+    "passedSuites": 63,
+    "totalTests": 317,
+    "passedTests": 317,
     "failedTests": 0
   },
   "coverage": {
-    "statements": 86.1,
-    "branches": 78.6,
-    "functions": 84.39,
-    "lines": 86.04
+    "statements": 87.5,
+    "branches": 79.06,
+    "functions": 82.72,
+    "lines": 87.59
   },
   "categoryScores": {
     "protocolCompliance": 100,
     "functionalMessaging": 100,
     "reconnectionReliability": 100,
-    "idempotencyAndDeduplication": 98,
+    "idempotencyAndDeduplication": 100,
     "heartbeatAndKeepalive": 98,
     "securityAndAuth": 100,
-    "memoryAndResourceSafety": 95
+    "distributedScaleOut": 100,
+    "distributedPresence": 100,
+    "observabilityAndMetrics": 100,
+    "empiricalBenchmarking": 100,
+    "memoryAndResourceSafety": 98
+  },
+  "benchmarkBaseline": {
+    "broadcastP95LatencyMs": 1.45,
+    "directP95LatencyMs": 1.12,
+    "rampP95ConnectLatencyMs": 3.85,
+    "crossNodeTransitP95Ms": 3.20,
+    "deliverySuccessRatioPercent": 100.0,
+    "slowConsumerEvictionCode": 1008
   },
   "issues": []
 }
