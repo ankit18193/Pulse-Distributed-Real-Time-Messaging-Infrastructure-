@@ -122,25 +122,31 @@ export class RedisMetrics {
 
   public recordPresenceEventPublished(): void {
     this.presenceEventsPublished++;
+    this.metricsRegistry?.getCounter('pulse_presence_events_total')?.inc({ direction: 'published' });
   }
 
   public recordPresenceEventReceived(): void {
     this.presenceEventsReceived++;
+    this.metricsRegistry?.getCounter('pulse_presence_events_total')?.inc({ direction: 'received' });
   }
 
   public recordPresencePruneLatency(durationMs: number): void {
     if (durationMs > this.presencePruneLatencyMs) {
       this.presencePruneLatencyMs = durationMs;
     }
+    this.metricsRegistry?.getHistogram('pulse_presence_prune_duration_seconds')?.record(durationMs / 1000);
   }
 
   public recordPresenceLeaseRenewals(count: number): void {
     this.presenceLeaseRenewals += count;
+    this.metricsRegistry?.getCounter('pulse_presence_lease_renewals_total')?.inc(undefined, count);
   }
 
   public setPresenceCounts(users: number, connections: number): void {
     this.presenceUsersOnline = users;
     this.presenceConnectionsActive = connections;
+    this.metricsRegistry?.getGauge('pulse_presence_users_online')?.set(users);
+    this.metricsRegistry?.getGauge('pulse_presence_connections_active')?.set(connections);
   }
 
   public getSnapshot(): RedisMetricsSnapshot {
@@ -194,5 +200,7 @@ export class RedisMetrics {
     this.metricsRegistry?.getGauge('pulse_redis_publish_in_flight')?.set(0);
     this.metricsRegistry?.getGauge('pulse_redis_subscriptions_active')?.set(0);
     this.metricsRegistry?.getGauge('pulse_redis_connection_state')?.set(0);
+    this.metricsRegistry?.getGauge('pulse_presence_users_online')?.set(0);
+    this.metricsRegistry?.getGauge('pulse_presence_connections_active')?.set(0);
   }
 }

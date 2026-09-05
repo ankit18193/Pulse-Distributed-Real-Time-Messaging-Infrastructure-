@@ -161,5 +161,65 @@ export function registerRedisMetrics(registry: PulseMetricsRegistry): void {
       })
     );
   }
+
+  registerPresenceMetrics(registry);
+}
+
+export function registerPresenceMetrics(registry: PulseMetricsRegistry): void {
+  if (!registry.getMetric('pulse_presence_users_online')) {
+    registry.register(
+      new Gauge({
+        name: 'pulse_presence_users_online',
+        help: 'Active online distinct users tracked for presence'
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_presence_connections_active')) {
+    registry.register(
+      new Gauge({
+        name: 'pulse_presence_connections_active',
+        help: 'Active presence connection leases on this node'
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_presence_events_total')) {
+    registry.register(
+      new Counter({
+        name: 'pulse_presence_events_total',
+        help: 'Total presence update events by direction',
+        labelNames: ['direction']
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_presence_lease_renewals_total')) {
+    registry.register(
+      new Counter({
+        name: 'pulse_presence_lease_renewals_total',
+        help: 'Total presence lease renewals processed'
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_presence_prune_duration_seconds')) {
+    registry.register(
+      new Histogram({
+        name: 'pulse_presence_prune_duration_seconds',
+        help: 'Redis presence pruning execution duration in seconds'
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_presence_operations_total')) {
+    registry.register(
+      new Counter({
+        name: 'pulse_presence_operations_total',
+        help: 'Total presence registration and removal operations by status',
+        labelNames: ['operation', 'status']
+      })
+    );
+  }
 }
 

@@ -14,6 +14,8 @@ import type { PresenceStatus, PresenceUpdatePayload, PulseEventEnvelope, RoomRos
 import type { RedisPubSubManager } from './RedisPubSubManager.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
+import type { PulseMetricsRegistry } from '../metrics/PulseMetricsRegistry.js';
+import { registerPresenceMetrics } from '../metrics/telemetry.js';
 
 export interface PresenceManagerOptions {
   presenceTtlMs?: number;
@@ -23,6 +25,7 @@ export interface PresenceManagerOptions {
   pubSubManager?: RedisPubSubManager;
   roomsProvider?: (userId: string) => string[];
   localRosterProvider?: (roomId: string) => string[];
+  metricsRegistry?: PulseMetricsRegistry;
 }
 
 export interface PresenceMetricsSnapshot {
@@ -67,6 +70,7 @@ export class PresenceManager {
   private eventsReceived: number = 0;
   private pruneLatencyMs: number = 0;
   private totalLeaseRenewals: number = 0;
+  private metricsRegistry?: PulseMetricsRegistry;
 
   constructor(
     redisClient: Redis,
@@ -82,6 +86,20 @@ export class PresenceManager {
     this.pubSubManager = options.pubSubManager;
     this.roomsProvider = options.roomsProvider;
     this.localRosterProvider = options.localRosterProvider;
+    this.metricsRegistry = options.metricsRegistry;
+
+    if (this.metricsRegistry) {
+      registerPresenceMetrics(this.metricsRegistry);
+    }
+  }
+
+  public setMetricsRegistry(metricsRegistry: PulseMetricsRegistry): void {
+    this.metricsRegistry = metricsRegistry;
+    registerPresenceMetrics(metricsRegistry);
+  }
+
+  public getMetricsRegistry(): PulseMetricsRegistry | undefined {
+    return this.metricsRegistry;
   }
 
   public getInstanceId(): string {
@@ -157,6 +175,7 @@ export class PresenceManager {
 
       this.localConnections.set(connectionId, { userId, connectionId });
       this.updateActiveMetrics();
+      this.metricsRegistry?.getCounter('pulse_presence_operations_total')?.inc({ operation: 'register', status: 'success' });
 
       logger.info('Presence connection registered', {
         component: 'PresenceManager',
@@ -177,6 +196,7 @@ export class PresenceManager {
         activeConnections
       };
     } catch (err) {
+      this.metricsRegistry?.getCounter('pulse_presence_operations_total')?.inc({ operation: 'register', status: 'error' });
       logger.warn('Failed to register presence connection in Redis', {
         component: 'PresenceManager',
         userId,
@@ -235,11 +255,14 @@ export class PresenceManager {
         await this.publishPresenceUpdate(userId, 'OFFLINE', activeConnections, rooms);
       }
 
+      this.metricsRegistry?.getCounter('pulse_presence_operations_total')?.inc({ operation: 'remove', status: 'success' });
+
       return {
         isOfflineTransition: transition === 1,
         activeConnections
       };
     } catch (err) {
+      this.metricsRegistry?.getCounter('pulse_presence_operations_total')?.inc({ operation: 'remove', status: 'error' });
       logger.warn('Failed to remove presence connection in Redis', {
         component: 'PresenceManager',
         userId,
@@ -288,6 +311,7 @@ export class PresenceManager {
       await this.pubSubManager.publishPresence(envelope);
       this.eventsPublished++;
       this.pubSubManager.getMetrics().recordPresenceEventPublished();
+      this.metricsRegistry?.getCounter('pulse_presence_events_total')?.inc({ direction: 'published' });
       logger.info('Published distributed presence event', {
         component: 'PresenceManager',
         instanceId: this.instanceId,
@@ -386,6 +410,7 @@ export class PresenceManager {
       if (this.pubSubManager) {
         this.pubSubManager.getMetrics().recordPresencePruneLatency(latency);
       }
+      this.metricsRegistry?.getHistogram('pulse_presence_prune_duration_seconds')?.record(latency / 1000);
       return pruned;
     } catch (err) {
       logger.warn('Failed to prune expired presence leases', {
@@ -449,6 +474,7 @@ export class PresenceManager {
       if (this.pubSubManager) {
         this.pubSubManager.getMetrics().recordPresenceLeaseRenewals(activeConnections.length);
       }
+      this.metricsRegistry?.getCounter('pulse_presence_lease_renewals_total')?.inc(undefined, activeConnections.length);
 
       logger.debug('Flushed presence lease renewals via pipeline', {
         component: 'PresenceManager',
@@ -604,6 +630,7 @@ export class PresenceManager {
       if (this.pubSubManager) {
         this.pubSubManager.getMetrics().recordPresencePruneLatency(pruneLatency);
       }
+      this.metricsRegistry?.getHistogram('pulse_presence_prune_duration_seconds')?.record(pruneLatency / 1000);
       const uniqueSorted = Array.from(new Set(onlineUserIds)).sort();
       return {
         roomId: trimmedRoom,
@@ -638,6 +665,7 @@ export class PresenceManager {
     if (this.pubSubManager) {
       this.pubSubManager.getMetrics().recordPresenceEventReceived();
     }
+    this.metricsRegistry?.getCounter('pulse_presence_events_total')?.inc({ direction: 'received' });
   }
 
   private updateActiveMetrics(): void {
@@ -645,9 +673,14 @@ export class PresenceManager {
     for (const { userId } of this.localConnections.values()) {
       userIds.add(userId);
     }
+    const onlineUsers = userIds.size;
+    const activeConns = this.localConnections.size;
+
     if (this.pubSubManager) {
-      this.pubSubManager.getMetrics().setPresenceCounts(userIds.size, this.localConnections.size);
+      this.pubSubManager.getMetrics().setPresenceCounts(onlineUsers, activeConns);
     }
+    this.metricsRegistry?.getGauge('pulse_presence_users_online')?.set(onlineUsers);
+    this.metricsRegistry?.getGauge('pulse_presence_connections_active')?.set(activeConns);
   }
 
   public getMetricsSnapshot(): PresenceMetricsSnapshot {

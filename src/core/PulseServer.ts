@@ -119,6 +119,9 @@ export class PulseServer {
 
     if (deps.presenceManager) {
       this.presenceManager = deps.presenceManager;
+      if (typeof (this.presenceManager as any).setMetricsRegistry === 'function') {
+        (this.presenceManager as any).setMetricsRegistry(this.metricsRegistry);
+      }
     }
 
     if (this.redisPubSubManager) {
@@ -265,6 +268,7 @@ export class PulseServer {
               presenceTtlMs: this.config.presenceTtlMs,
               presenceFlushIntervalMs: this.config.presenceFlushIntervalMs,
               pubSubManager: this.redisPubSubManager,
+              metricsRegistry: this.metricsRegistry,
               roomsProvider: (userId: string) => {
                 const conns = this.connectionManager.getConnectionsByUserId(userId);
                 const rooms = new Set<string>();
@@ -748,6 +752,7 @@ export class PulseServer {
             presenceTtlMs: this.config.presenceTtlMs,
             presenceFlushIntervalMs: this.config.presenceFlushIntervalMs,
             pubSubManager: this.redisPubSubManager,
+            metricsRegistry: this.metricsRegistry,
             roomsProvider: (userId: string) => {
               const conns = this.connectionManager.getConnectionsByUserId(userId);
               const rooms = new Set<string>();
