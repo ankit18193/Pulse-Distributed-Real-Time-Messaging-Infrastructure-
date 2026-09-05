@@ -205,6 +205,10 @@ export class FaultProxy {
     });
   }
 
+  public async stop(): Promise<void> {
+    return this.close();
+  }
+
   private handleClientConnection(clientSocket: net.Socket): void {
     // If severed, reject/destroy immediately
     if (this.state === 'SEVERED') {

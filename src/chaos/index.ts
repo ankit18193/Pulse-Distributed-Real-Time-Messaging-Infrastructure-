@@ -9,3 +9,4 @@ export * from './types.js';
 export { WebSocketFrameFilter } from './WebSocketFrameFilter.js';
 export { FaultProxy } from './FaultProxy.js';
 export { ChaosScenarioRunner } from './ChaosScenarioRunner.js';
+export { createAllScenarios, registerAllScenarios } from './scenarios.js';
