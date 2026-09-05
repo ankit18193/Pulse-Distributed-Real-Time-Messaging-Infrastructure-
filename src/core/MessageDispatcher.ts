@@ -7,6 +7,8 @@ import { EventValidator } from '../events/EventValidator.js';
 import { PulseEventEnvelope, PresenceUpdatePayload, RoomRosterPayload } from '../types/index.js';
 import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
 import type { PresenceManager } from '../redis/PresenceManager.js';
+import type { PulseMetricsRegistry } from '../metrics/PulseMetricsRegistry.js';
+import { BOUNDED_EVENT_TYPES } from '../metrics/types.js';
 import { extractRoomId, extractUserId } from '../redis/ChannelRegistry.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
@@ -17,6 +19,7 @@ export interface MessageDispatcherOptions {
   idempotencyManager?: IdempotencyManager;
   redisPubSubManager?: RedisPubSubManager;
   presenceManager?: PresenceManager;
+  metricsRegistry?: PulseMetricsRegistry;
   instanceId: string;
 }
 
@@ -26,6 +29,7 @@ export class MessageDispatcher extends EventEmitter {
   private readonly idempotencyManager: IdempotencyManager;
   private readonly redisPubSubManager?: RedisPubSubManager;
   private presenceManager?: PresenceManager;
+  private readonly metricsRegistry?: PulseMetricsRegistry;
   private readonly instanceId: string;
 
   constructor(options: MessageDispatcherOptions) {
@@ -36,6 +40,7 @@ export class MessageDispatcher extends EventEmitter {
       options.idempotencyManager ?? new IdempotencyManager();
     this.redisPubSubManager = options.redisPubSubManager;
     this.presenceManager = options.presenceManager;
+    this.metricsRegistry = options.metricsRegistry;
     this.instanceId = options.instanceId;
 
     if (this.presenceManager) {
@@ -351,85 +356,29 @@ export class MessageDispatcher extends EventEmitter {
     return delivered;
   }
 
+  public getMetricsRegistry(): PulseMetricsRegistry | undefined {
+    return this.metricsRegistry;
+  }
+
   public async dispatchRawMessage(
     sender: Connection,
     rawData: string | Buffer
   ): Promise<void> {
+    const startHr = process.hrtime.bigint();
     sender.touch();
 
-    const validation = EventValidator.validateIncoming(rawData, sender.userId);
+    try {
+      const validation = EventValidator.validateIncoming(rawData, sender.userId);
 
-    if (!validation.valid || !validation.envelope) {
-      logger.warn('Rejected invalid incoming message frame', {
-        component: 'MessageDispatcher',
-        event: 'INVALID_FRAME',
-        connectionId: sender.connectionId,
-        userId: sender.userId,
-        error: validation.error?.message
-      });
-
-      const errorEnvelope: PulseEventEnvelope = {
-        eventId: generateUUIDv7(),
-        type: 'SYS_ERROR',
-        timestamp: Date.now(),
-        senderId: 'system',
-        correlationId: validation.error?.correlationId,
-        payload: {
-          code: validation.error?.code || 'INVALID_EVENT',
-          message: validation.error?.message || 'Invalid event payload'
-        }
-      };
-
-      sender.send(errorEnvelope);
-      return;
-    }
-
-    const envelope = validation.envelope;
-
-    // 2. Check IdempotencyManager for existing eventId/payload BEFORE sequence checking
-    if (envelope.type === 'ROOM_MESSAGE' || envelope.type === 'DIRECT_MESSAGE') {
-      const idempCheck = this.idempotencyManager.check(
-        envelope.eventId,
-        envelope.payload
-      );
-
-      if (idempCheck.isDuplicate) {
-        if (idempCheck.hasConflict) {
-          const conflictError: PulseEventEnvelope = {
-            eventId: generateUUIDv7(),
-            type: 'SYS_ERROR',
-            timestamp: Date.now(),
-            senderId: 'system',
-            correlationId: envelope.correlationId || envelope.eventId,
-            payload: {
-              code: 'EVENT_ID_CONFLICT',
-              message: `Event ID '${envelope.eventId}' has already been processed with a different payload`
-            }
-          };
-          sender.send(conflictError);
-          return;
-        }
-
-        // Legitimate duplicate: replay cached ACK, preserve correlationId, do NOT broadcast/process again
-        if (idempCheck.cachedAck) {
-          const replayAck: PulseEventEnvelope = {
-            ...idempCheck.cachedAck,
-            correlationId: envelope.correlationId || idempCheck.cachedAck.correlationId
-          };
-          sender.send(replayAck);
-          return;
-        }
-      }
-    }
-
-    // 3. Only for NEW events perform sequence validation
-    if (envelope.seq !== undefined) {
-      if (envelope.seq < sender.lastSeenSeq) {
-        logger.warn('Out of order sequence number detected', {
+      if (!validation.valid || !validation.envelope) {
+        this.metricsRegistry?.getCounter('pulse_messages_dropped_total')?.inc({ reason: 'malformed_frame' });
+        this.metricsRegistry?.getCounter('pulse_messages_received_total')?.inc({ event_type: 'SYS_ERROR' });
+        logger.warn('Rejected invalid incoming message frame', {
           component: 'MessageDispatcher',
+          event: 'INVALID_FRAME',
           connectionId: sender.connectionId,
-          receivedSeq: envelope.seq,
-          lastSeenSeq: sender.lastSeenSeq
+          userId: sender.userId,
+          error: validation.error?.message
         });
 
         const errorEnvelope: PulseEventEnvelope = {
@@ -437,53 +386,128 @@ export class MessageDispatcher extends EventEmitter {
           type: 'SYS_ERROR',
           timestamp: Date.now(),
           senderId: 'system',
-          correlationId: envelope.correlationId || envelope.eventId,
+          correlationId: validation.error?.correlationId,
           payload: {
-            code: 'INVALID_SEQUENCE_ORDER',
-            message: `Sequence number ${envelope.seq} is out of order (expected >= ${sender.lastSeenSeq})`
+            code: validation.error?.code || 'INVALID_EVENT',
+            message: validation.error?.message || 'Invalid event payload'
           }
         };
 
         sender.send(errorEnvelope);
         return;
       }
-    }
 
-    switch (envelope.type) {
-      case 'ROOM_JOIN':
-        await this.handleRoomJoin(sender, envelope);
-        break;
+      const envelope = validation.envelope;
+      const eventType = (BOUNDED_EVENT_TYPES as readonly string[]).includes(envelope.type)
+        ? envelope.type
+        : 'ROOM_MESSAGE';
+      this.metricsRegistry?.getCounter('pulse_messages_received_total')?.inc({ event_type: eventType });
 
-      case 'ROOM_BATCH_JOIN':
-        await this.handleRoomBatchJoin(sender, envelope);
-        break;
+      // 2. Check IdempotencyManager for existing eventId/payload BEFORE sequence checking
+      if (envelope.type === 'ROOM_MESSAGE' || envelope.type === 'DIRECT_MESSAGE') {
+        const idempCheck = this.idempotencyManager.check(
+          envelope.eventId,
+          envelope.payload
+        );
 
-      case 'ROOM_LEAVE':
-        await this.handleRoomLeave(sender, envelope);
-        break;
+        if (idempCheck.isDuplicate) {
+          this.metricsRegistry?.getCounter('pulse_messages_dropped_total')?.inc({ reason: 'duplicate' });
+          if (idempCheck.hasConflict) {
+            const conflictError: PulseEventEnvelope = {
+              eventId: generateUUIDv7(),
+              type: 'SYS_ERROR',
+              timestamp: Date.now(),
+              senderId: 'system',
+              correlationId: envelope.correlationId || envelope.eventId,
+              payload: {
+                code: 'EVENT_ID_CONFLICT',
+                message: `Event ID '${envelope.eventId}' has already been processed with a different payload`
+              }
+            };
+            sender.send(conflictError);
+            return;
+          }
 
-      case 'ROOM_MESSAGE':
-        this.handleRoomMessage(sender, envelope);
-        break;
+          // Legitimate duplicate: replay cached ACK, preserve correlationId, do NOT broadcast/process again
+          if (idempCheck.cachedAck) {
+            const replayAck: PulseEventEnvelope = {
+              ...idempCheck.cachedAck,
+              correlationId: envelope.correlationId || idempCheck.cachedAck.correlationId
+            };
+            sender.send(replayAck);
+            this.metricsRegistry?.getCounter('pulse_acknowledgements_total')?.inc({ status: 'success' });
+            return;
+          }
+        }
+      }
 
-      case 'DIRECT_MESSAGE':
-        this.handleDirectMessage(sender, envelope);
-        break;
+      // 3. Only for NEW events perform sequence validation
+      if (envelope.seq !== undefined) {
+        if (envelope.seq < sender.lastSeenSeq) {
+          this.metricsRegistry?.getCounter('pulse_messages_dropped_total')?.inc({ reason: 'invalid_format' });
+          logger.warn('Out of order sequence number detected', {
+            component: 'MessageDispatcher',
+            connectionId: sender.connectionId,
+            receivedSeq: envelope.seq,
+            lastSeenSeq: sender.lastSeenSeq
+          });
 
-      case 'SYS_PING':
-        this.handlePing(sender, envelope);
-        break;
+          const errorEnvelope: PulseEventEnvelope = {
+            eventId: generateUUIDv7(),
+            type: 'SYS_ERROR',
+            timestamp: Date.now(),
+            senderId: 'system',
+            correlationId: envelope.correlationId || envelope.eventId,
+            payload: {
+              code: 'INVALID_SEQUENCE_ORDER',
+              message: `Sequence number ${envelope.seq} is out of order (expected >= ${sender.lastSeenSeq})`
+            }
+          };
 
-      case 'SYS_PONG':
-        this.handlePong(sender, envelope);
-        break;
+          sender.send(errorEnvelope);
+          return;
+        }
+      }
 
-      default:
-        logger.warn('Unhandled event type received', {
-          component: 'MessageDispatcher',
-          type: envelope.type
-        });
-        break;
+      switch (envelope.type) {
+        case 'ROOM_JOIN':
+          await this.handleRoomJoin(sender, envelope);
+          break;
+
+        case 'ROOM_BATCH_JOIN':
+          await this.handleRoomBatchJoin(sender, envelope);
+          break;
+
+        case 'ROOM_LEAVE':
+          await this.handleRoomLeave(sender, envelope);
+          break;
+
+        case 'ROOM_MESSAGE':
+          this.handleRoomMessage(sender, envelope);
+          break;
+
+        case 'DIRECT_MESSAGE':
+          this.handleDirectMessage(sender, envelope);
+          break;
+
+        case 'SYS_PING':
+          this.handlePing(sender, envelope);
+          break;
+
+        case 'SYS_PONG':
+          this.handlePong(sender, envelope);
+          break;
+
+        default:
+          logger.warn('Unhandled event type received', {
+            component: 'MessageDispatcher',
+            type: envelope.type
+          });
+          break;
+      }
+    } finally {
+      const durationSec = Number(process.hrtime.bigint() - startHr) / 1e9;
+      this.metricsRegistry?.getHistogram('pulse_message_processing_duration_seconds')?.record(durationSec);
     }
   }
 
@@ -539,6 +563,7 @@ export class MessageDispatcher extends EventEmitter {
     };
 
     sender.send(ack);
+    this.metricsRegistry?.getCounter('pulse_acknowledgements_total')?.inc({ status: 'success' });
   }
 
   private async handleRoomBatchJoin(
@@ -578,6 +603,7 @@ export class MessageDispatcher extends EventEmitter {
     };
 
     sender.send(ack);
+    this.metricsRegistry?.getCounter('pulse_acknowledgements_total')?.inc({ status: 'success' });
   }
 
   private async handleRoomLeave(
@@ -617,6 +643,7 @@ export class MessageDispatcher extends EventEmitter {
     };
 
     sender.send(ack);
+    this.metricsRegistry?.getCounter('pulse_acknowledgements_total')?.inc({ status: 'success' });
   }
 
   private handleRoomMessage(
@@ -640,6 +667,7 @@ export class MessageDispatcher extends EventEmitter {
         }
       };
       sender.send(errorAck);
+      this.metricsRegistry?.getCounter('pulse_acknowledgements_total')?.inc({ status: 'error' });
       return;
     }
 
@@ -683,6 +711,7 @@ export class MessageDispatcher extends EventEmitter {
     );
 
     sender.send(ack);
+    this.metricsRegistry?.getCounter('pulse_acknowledgements_total')?.inc({ status: 'success' });
 
     // 5. Publish to Redis for remote instances (if connected)
     if (this.redisPubSubManager && this.redisPubSubManager.isConnected()) {
@@ -745,6 +774,7 @@ export class MessageDispatcher extends EventEmitter {
     );
 
     sender.send(ack);
+    this.metricsRegistry?.getCounter('pulse_acknowledgements_total')?.inc({ status: 'success' });
 
     // 4. Publish to Redis for remote instances (if connected)
     if (this.redisPubSubManager && this.redisPubSubManager.isConnected()) {

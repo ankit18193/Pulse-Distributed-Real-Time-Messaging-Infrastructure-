@@ -1,12 +1,19 @@
 import { logger } from '../utils/logger.js';
 import type { ChannelRegistry } from '../redis/ChannelRegistry.js';
+import type { PulseMetricsRegistry } from '../metrics/PulseMetricsRegistry.js';
 
 export class RoomManager {
   private readonly rooms: Map<string, Set<string>> = new Map();
   private channelRegistry?: ChannelRegistry;
+  private metricsRegistry?: PulseMetricsRegistry;
 
-  constructor(channelRegistry?: ChannelRegistry) {
+  constructor(channelRegistry?: ChannelRegistry, metricsRegistry?: PulseMetricsRegistry) {
     this.channelRegistry = channelRegistry;
+    this.metricsRegistry = metricsRegistry;
+  }
+
+  public setMetricsRegistry(metricsRegistry: PulseMetricsRegistry): void {
+    this.metricsRegistry = metricsRegistry;
   }
 
   public setChannelRegistry(channelRegistry: ChannelRegistry): void {
@@ -26,6 +33,10 @@ export class RoomManager {
 
     const isNew = !members.has(connectionId);
     members.add(connectionId);
+
+    if (isNew) {
+      this.metricsRegistry?.getGauge('pulse_rooms_active')?.set(this.rooms.size);
+    }
 
     if (isNew && this.channelRegistry) {
       this.channelRegistry.subscribeRoom(roomId).catch((err) => {
@@ -81,6 +92,7 @@ export class RoomManager {
 
     if (members.size === 0) {
       this.rooms.delete(roomId);
+      this.metricsRegistry?.getGauge('pulse_rooms_active')?.set(this.rooms.size);
       logger.debug('Room pruned after last member left', {
         component: 'RoomManager',
         event: 'ROOM_PRUNED',
@@ -148,5 +160,6 @@ export class RoomManager {
 
   public clear(): void {
     this.rooms.clear();
+    this.metricsRegistry?.getGauge('pulse_rooms_active')?.set(0);
   }
 }

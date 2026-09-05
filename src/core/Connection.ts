@@ -2,6 +2,8 @@ import { WebSocket } from 'ws';
 import { ConnectionContext } from '../types/index.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
+import type { PulseMetricsRegistry } from '../metrics/PulseMetricsRegistry.js';
+import { BOUNDED_EVENT_TYPES } from '../metrics/types.js';
 
 export class Connection {
   public readonly connectionId: string;
@@ -13,6 +15,7 @@ export class Connection {
   public readonly socket: WebSocket;
   public readonly remoteAddress: string;
   public readonly maxBufferedAmountBytes: number;
+  private readonly metricsRegistry?: PulseMetricsRegistry;
   private readonly rooms: Set<string> = new Set();
   private isCleanedUp: boolean = false;
 
@@ -23,6 +26,7 @@ export class Connection {
     socket: WebSocket;
     remoteAddress?: string;
     maxBufferedAmountBytes?: number;
+    metricsRegistry?: PulseMetricsRegistry;
   }) {
     this.connectionId = options.connectionId ?? generateUUIDv7();
     this.userId = options.userId;
@@ -30,6 +34,7 @@ export class Connection {
     this.socket = options.socket;
     this.remoteAddress = options.remoteAddress ?? 'unknown';
     this.maxBufferedAmountBytes = options.maxBufferedAmountBytes ?? 1024 * 1024;
+    this.metricsRegistry = options.metricsRegistry;
     this.connectedAt = Date.now();
     this.lastSeenAt = this.connectedAt;
   }
@@ -59,13 +64,28 @@ export class Connection {
         bufferedAmount: this.socket.bufferedAmount,
         maxBufferedAmountBytes: this.maxBufferedAmountBytes
       });
+      this.metricsRegistry?.getCounter('pulse_messages_dropped_total')?.inc({ reason: 'slow_consumer' });
       this.close(1008, 'Policy Violation: Buffer overflow / slow consumer');
       return false;
     }
 
     try {
+      const startHr = process.hrtime.bigint();
       const payload = typeof data === 'string' ? data : JSON.stringify(data);
       this.socket.send(payload);
+      const durationSec = Number(process.hrtime.bigint() - startHr) / 1e9;
+      this.metricsRegistry?.getHistogram('pulse_local_delivery_duration_seconds')?.record(durationSec);
+
+      let inferredType: string | undefined;
+      if (typeof data === 'object' && data !== null && 'type' in data) {
+        inferredType = (data as any).type;
+      }
+      if (inferredType && (BOUNDED_EVENT_TYPES as readonly string[]).includes(inferredType)) {
+        this.metricsRegistry?.getCounter('pulse_messages_delivered_total')?.inc({ event_type: inferredType });
+      } else {
+        this.metricsRegistry?.getCounter('pulse_messages_delivered_total')?.inc({ event_type: 'ROOM_MESSAGE' });
+      }
+
       return true;
     } catch (err) {
       logger.error('Failed to send data frame over socket', {

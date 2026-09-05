@@ -11,7 +11,7 @@ import { IdempotencyManager } from './IdempotencyManager.js';
 import { RedisPubSubManager } from '../redis/RedisPubSubManager.js';
 import { ChannelRegistry } from '../redis/ChannelRegistry.js';
 import { PresenceManager } from '../redis/PresenceManager.js';
-import { PulseMetricsRegistry, PrometheusSerializer, EventLoopMonitor, Gauge } from '../metrics/index.js';
+import { PulseMetricsRegistry, PrometheusSerializer, EventLoopMonitor, Gauge, registerWebSocketMetrics } from '../metrics/index.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
 
@@ -66,6 +66,8 @@ export class PulseServer {
     this.metricsRegistry = deps.metricsRegistry ?? new PulseMetricsRegistry();
 
     if (this.config.metricsEnabled !== false) {
+      registerWebSocketMetrics(this.metricsRegistry);
+
       this.gaugeEventLoopMean = (this.metricsRegistry.getMetric('pulse_event_loop_lag_seconds') as Gauge) ??
         new Gauge({
           name: 'pulse_event_loop_lag_seconds',
@@ -136,8 +138,8 @@ export class PulseServer {
       }
     }
 
-    this.connectionManager = new ConnectionManager(this.channelRegistry);
-    this.roomManager = new RoomManager(this.channelRegistry);
+    this.connectionManager = new ConnectionManager(this.channelRegistry, this.metricsRegistry);
+    this.roomManager = new RoomManager(this.channelRegistry, this.metricsRegistry);
     this.idempotencyManager = new IdempotencyManager({
       capacity: config.idempotencyCapacity,
       ttlMs: config.idempotencyTtlMs
@@ -149,6 +151,7 @@ export class PulseServer {
       idempotencyManager: this.idempotencyManager,
       redisPubSubManager: this.redisPubSubManager,
       presenceManager: this.presenceManager,
+      metricsRegistry: this.metricsRegistry,
       instanceId: config.instanceId
     });
 
@@ -304,6 +307,7 @@ export class PulseServer {
 
           const authResult = this.authenticator.authenticateRequest(req);
           if (!authResult.authenticated) {
+            this.metricsRegistry.getCounter('pulse_connections_total')?.inc({ status: 'rejected' });
             const body = JSON.stringify({ error: authResult.error || 'Unauthorized' });
             socket.end(
               'HTTP/1.1 401 Unauthorized\r\n' +
@@ -314,6 +318,8 @@ export class PulseServer {
             );
             return;
           }
+
+          this.metricsRegistry.getCounter('pulse_connections_total')?.inc({ status: 'success' });
 
           this.wss!.handleUpgrade(req, socket, head, (ws) => {
             this.handleAuthenticatedConnection(ws, req, authResult);
@@ -510,7 +516,8 @@ export class PulseServer {
       userId,
       roles,
       remoteAddress,
-      maxBufferedAmountBytes: this.config.maxBufferedAmountBytes
+      maxBufferedAmountBytes: this.config.maxBufferedAmountBytes,
+      metricsRegistry: this.metricsRegistry
     });
 
     this.connectionManager.addConnection(connection);
@@ -573,6 +580,16 @@ export class PulseServer {
     });
 
     socket.on('close', (code, reason) => {
+      let closeReason = 'client_close';
+      if (code === 1008) {
+        closeReason = 'slow_consumer';
+      } else if (code === 1001) {
+        closeReason = 'server_shutdown';
+      } else if (code === 4000 || reason.toString().toLowerCase().includes('heartbeat')) {
+        closeReason = 'heartbeat_timeout';
+      }
+      this.metricsRegistry.getCounter('pulse_connections_closed_total')?.inc({ reason: closeReason });
+
       this.connectionManager.removeConnection(connection.connectionId);
       this.roomManager.removeConnectionFromAllRooms(
         connection.connectionId,

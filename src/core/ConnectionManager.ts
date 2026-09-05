@@ -1,14 +1,21 @@
 import { Connection } from './Connection.js';
 import { logger } from '../utils/logger.js';
 import type { ChannelRegistry } from '../redis/ChannelRegistry.js';
+import type { PulseMetricsRegistry } from '../metrics/PulseMetricsRegistry.js';
 
 export class ConnectionManager {
   private readonly connections: Map<string, Connection> = new Map();
   private readonly userConnections: Map<string, Set<string>> = new Map();
   private channelRegistry?: ChannelRegistry;
+  private metricsRegistry?: PulseMetricsRegistry;
 
-  constructor(channelRegistry?: ChannelRegistry) {
+  constructor(channelRegistry?: ChannelRegistry, metricsRegistry?: PulseMetricsRegistry) {
     this.channelRegistry = channelRegistry;
+    this.metricsRegistry = metricsRegistry;
+  }
+
+  public setMetricsRegistry(metricsRegistry: PulseMetricsRegistry): void {
+    this.metricsRegistry = metricsRegistry;
   }
 
   public setChannelRegistry(channelRegistry: ChannelRegistry): void {
@@ -39,6 +46,8 @@ export class ConnectionManager {
         });
       });
     }
+
+    this.metricsRegistry?.getGauge('pulse_connections_active')?.set(this.connections.size);
 
     logger.debug('Registered connection in ConnectionManager', {
       component: 'ConnectionManager',
@@ -78,6 +87,8 @@ export class ConnectionManager {
     }
 
     connection.markCleanedUp();
+
+    this.metricsRegistry?.getGauge('pulse_connections_active')?.set(this.connections.size);
 
     logger.debug('Unregistered connection from ConnectionManager', {
       component: 'ConnectionManager',
@@ -126,5 +137,6 @@ export class ConnectionManager {
   public clear(): void {
     this.connections.clear();
     this.userConnections.clear();
+    this.metricsRegistry?.getGauge('pulse_connections_active')?.set(0);
   }
 }
