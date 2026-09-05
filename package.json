@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "test": "jest --runInBand --detectOpenHandles",
-    "test:coverage": "jest --coverage --runInBand"
+    "test:coverage": "jest --coverage --runInBand",
+    "bench": "tsx bin/pulse-bench.ts"
   },
   "keywords": [
     "websocket",
