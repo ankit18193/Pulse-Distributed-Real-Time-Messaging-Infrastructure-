@@ -8,6 +8,8 @@ import { Authenticator } from '../auth/Authenticator.js';
 import { StatsAggregator } from './StatsAggregator.js';
 import { BenchmarkConfig, BenchmarkProfile, BenchmarkResult } from './types.js';
 import { RampProfile } from './profiles/RampProfile.js';
+import { BroadcastProfile } from './profiles/BroadcastProfile.js';
+import { DirectProfile } from './profiles/DirectProfile.js';
 
 export const SAFE_MAX_CONNECTIONS = 5000;
 export const DEFAULT_AUTH_SECRET = 'dev-secret-key-pulse-messaging-jwt';
@@ -152,8 +154,16 @@ export class BenchmarkRunner {
         case 'ramp':
           await this.runRampWorkload();
           break;
-        case 'broadcast':
-        case 'direct':
+        case 'broadcast': {
+          const profile = new BroadcastProfile(this.config, this.aggregator);
+          await profile.execute();
+          break;
+        }
+        case 'direct': {
+          const profile = new DirectProfile(this.config, this.aggregator);
+          await profile.execute();
+          break;
+        }
         case 'presence':
         case 'backpressure':
         default:
