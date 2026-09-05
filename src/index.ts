@@ -25,6 +25,23 @@ export * from './redis/PresenceLuaScripts.js';
 export * from './redis/PresenceEventTracker.js';
 export * from './redis/PresenceManager.js';
 export * from './redis/RedisMetrics.js';
+export * from './metrics/types.js';
+export * from './metrics/Counter.js';
+export * from './metrics/Gauge.js';
+export * from './metrics/Histogram.js';
+export * from './metrics/PulseMetricsRegistry.js';
+export * from './metrics/PrometheusSerializer.js';
+export * from './metrics/EventLoopMonitor.js';
+export * from './metrics/telemetry.js';
+export * from './bench/types.js';
+export * from './bench/StatsAggregator.js';
+export * from './bench/BenchmarkRunner.js';
+export * from './bench/profiles/RampProfile.js';
+export * from './bench/profiles/BroadcastProfile.js';
+export * from './bench/profiles/DirectProfile.js';
+export * from './bench/profiles/DistributedTwoNodeProfile.js';
+export * from './bench/profiles/BackpressureProfile.js';
+export * from './bench/profiles/PresenceChurnProfile.js';
 
 async function bootstrap() {
   const config = loadConfig();
