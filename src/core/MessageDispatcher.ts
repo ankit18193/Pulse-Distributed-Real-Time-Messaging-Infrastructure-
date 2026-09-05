@@ -29,7 +29,7 @@ export class MessageDispatcher extends EventEmitter {
   private readonly idempotencyManager: IdempotencyManager;
   private readonly redisPubSubManager?: RedisPubSubManager;
   private presenceManager?: PresenceManager;
-  private readonly metricsRegistry?: PulseMetricsRegistry;
+  private metricsRegistry?: PulseMetricsRegistry;
   private readonly instanceId: string;
 
   constructor(options: MessageDispatcherOptions) {
@@ -93,6 +93,10 @@ export class MessageDispatcher extends EventEmitter {
     return this.instanceId;
   }
 
+  public setMetricsRegistry(metricsRegistry: PulseMetricsRegistry): void {
+    this.metricsRegistry = metricsRegistry;
+  }
+
   /**
    * Processes an inbound event received from a Redis Pub/Sub channel:
    * 1. Validates envelope
@@ -148,6 +152,15 @@ export class MessageDispatcher extends EventEmitter {
         localInstanceId: this.instanceId
       });
       return false;
+    }
+
+    // Cross-node transit latency measurement
+    // NOTE: Wall-clock measurement across distributed nodes depends on reasonably synchronized clocks (NTP).
+    // Do not confuse cross-node transit measurement with local monotonic latency (which uses process.hrtime.bigint()).
+    // If receiving node clock is behind the origin node clock, clamp the resulting negative delta to 0.
+    if (typeof envelope.originTimestampMs === 'number' && Number.isFinite(envelope.originTimestampMs)) {
+      const transitMs = Math.max(0, Date.now() - envelope.originTimestampMs);
+      this.metricsRegistry?.getHistogram('pulse_cross_node_transit_seconds')?.record(transitMs / 1000);
     }
 
     // 3. Local idempotency check: deduplicate inbound Redis events

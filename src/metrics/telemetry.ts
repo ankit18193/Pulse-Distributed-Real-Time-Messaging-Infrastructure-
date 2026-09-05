@@ -152,5 +152,14 @@ export function registerRedisMetrics(registry: PulseMetricsRegistry): void {
       })
     );
   }
+
+  if (!registry.getMetric('pulse_cross_node_transit_seconds')) {
+    registry.register(
+      new Histogram({
+        name: 'pulse_cross_node_transit_seconds',
+        help: 'Cross-node Redis Pub/Sub transit latency in seconds (wall-clock, negative skew clamped to 0)'
+      })
+    );
+  }
 }
 

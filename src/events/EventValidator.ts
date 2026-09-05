@@ -251,6 +251,22 @@ export class EventValidator {
       originInstanceId = obj.originInstanceId.trim();
     }
 
+    // Validate optional originTimestampMs
+    let originTimestampMs: number | undefined;
+    if (obj.originTimestampMs !== undefined) {
+      if (typeof obj.originTimestampMs !== 'number' || !Number.isFinite(obj.originTimestampMs)) {
+        return {
+          valid: false,
+          error: {
+            code: 'INVALID_ORIGIN_TIMESTAMP',
+            message: 'originTimestampMs must be a valid finite number',
+            correlationId
+          }
+        };
+      }
+      originTimestampMs = obj.originTimestampMs;
+    }
+
     const envelope: PulseEventEnvelope = {
       eventId,
       type: eventType,
@@ -261,7 +277,8 @@ export class EventValidator {
       payload,
       correlationId,
       ackRequired: obj.ackRequired === true,
-      originInstanceId
+      originInstanceId,
+      originTimestampMs
     };
 
     return {
@@ -310,6 +327,9 @@ export class EventValidator {
       ...baseResult.envelope,
       originInstanceId: (obj.originInstanceId as string).trim()
     };
+    if (typeof obj.originTimestampMs === 'number' && Number.isFinite(obj.originTimestampMs)) {
+      distributedEnvelope.originTimestampMs = obj.originTimestampMs;
+    }
     delete distributedEnvelope.seq;
 
     return {
@@ -319,16 +339,22 @@ export class EventValidator {
   }
 
   /**
-   * Stamps the local instance ID onto an envelope for distributed publishing,
+   * Stamps the local instance ID and originTimestampMs onto an envelope for distributed publishing,
    * while stripping the connection-local seq so it cannot be misused as distributed ordering.
+   *
+   * Wall-clock measurement (originTimestampMs) depends on reasonably synchronized clocks (NTP).
+   * Cross-node transit measurements must clamp negative values to zero.
+   * Local execution latency should use monotonic timers (process.hrtime.bigint()) instead.
    */
   public static stampForDistribution(
     envelope: PulseEventEnvelope,
-    instanceId: string
+    instanceId: string,
+    originTimestampMs: number = Date.now()
   ): PulseEventEnvelope {
     const distributed: PulseEventEnvelope = {
       ...envelope,
-      originInstanceId: instanceId
+      originInstanceId: instanceId,
+      originTimestampMs
     };
     delete distributed.seq;
     return distributed;

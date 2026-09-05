@@ -280,6 +280,7 @@ export class PresenceManager {
       timestamp: Date.now(),
       senderId: 'system',
       originInstanceId: this.instanceId,
+      originTimestampMs: Date.now(),
       payload
     };
 
