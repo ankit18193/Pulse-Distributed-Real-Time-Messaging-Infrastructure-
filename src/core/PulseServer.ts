@@ -529,10 +529,34 @@ export class PulseServer {
     const userId = authResult.userId!;
     const roles = authResult.roles || ['user'];
 
-    const forwarded = req.headers['x-forwarded-for'];
-    const remoteAddress =
-      (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : undefined) ||
-      req.socket.remoteAddress;
+    const immediateRemote = req.socket.remoteAddress || '127.0.0.1';
+    let remoteAddress = immediateRemote;
+
+    if (this.config.trustProxy) {
+      const defaultTrusted = ['127.0.0.1', '::1', '::ffff:127.0.0.1'];
+      const trustedList = this.config.trustedProxies ?? defaultTrusted;
+      const trustedSet = new Set(
+        trustedList.map((ip) => (ip.startsWith('::ffff:') ? ip.slice(7) : ip))
+      );
+      const normalizedImmediate = immediateRemote.startsWith('::ffff:')
+        ? immediateRemote.slice(7)
+        : immediateRemote;
+
+      if (trustedSet.has(normalizedImmediate) || trustedSet.has(immediateRemote)) {
+        const forwarded = req.headers['x-forwarded-for'];
+        if (typeof forwarded === 'string' && forwarded.trim().length > 0) {
+          const firstToken = forwarded.split(',')[0]?.trim();
+          if (firstToken) {
+            remoteAddress = firstToken;
+          }
+        }
+      }
+    }
+
+    const requestId =
+      typeof req.headers['x-request-id'] === 'string' && req.headers['x-request-id'].trim().length > 0
+        ? req.headers['x-request-id'].trim()
+        : undefined;
 
     const connection = new Connection({
       socket,
@@ -552,7 +576,8 @@ export class PulseServer {
       connectionId,
       userId,
       roles,
-      remoteAddress
+      remoteAddress,
+      ...(requestId ? { requestId } : {})
     });
 
     // Send initial SYS_CONNECT_ACK envelope

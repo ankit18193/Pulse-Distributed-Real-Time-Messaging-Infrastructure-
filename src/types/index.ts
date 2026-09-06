@@ -12,6 +12,8 @@ export interface PulseConfig {
   heartbeatTimeoutMs: number;
   maxPayloadBytes: number;
   authSecret: string;
+  trustProxy?: boolean;
+  trustedProxies?: string[];
   idempotencyCapacity?: number;
   idempotencyTtlMs?: number;
   redisEnabled?: boolean;

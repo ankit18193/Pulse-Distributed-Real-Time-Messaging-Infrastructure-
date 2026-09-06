@@ -1,0 +1,58 @@
+# RouteX Edge API Gateway integration configuration for Pulse
+# Maps incoming public WebSocket and HTTP traffic to Pulse cluster nodes.
+
+server:
+  port: 8080
+  host: 0.0.0.0
+  requestTimeoutMs: 10000
+  headersTimeoutMs: 11000
+  maxHeaderSize: 16384
+  trustedProxies:
+    - 127.0.0.1
+    - ::1
+    - 172.16.0.0/12
+    - 10.0.0.0/8
+  logLevel: info
+  logFormat: json
+
+redis:
+  enabled: true
+  host: 127.0.0.1
+  port: 6379
+  db: 0
+  connectTimeoutMs: 3000
+  keyPrefix: "routex:"
+
+routes:
+  # 1. Pulse Distributed WebSocket Edge Route (Health-Aware Load Balanced)
+  - id: pulse_ws_cluster
+    pathPrefix: /ws
+    upstreams:
+      - http://127.0.0.1:3001
+      - http://127.0.0.1:3002
+    stripPrefix: false
+    websocket: true
+    methods: [GET]
+    auth:
+      mode: public  # RouteX acts as transparent edge proxy; Pulse performs authoritative token verification
+    rateLimit:
+      enabled: true
+      windowSec: 60
+      limit: 100
+      failurePolicy: fail-open
+    timeouts:
+      connectTimeoutMs: 2000
+      responseTimeoutMs: 5000
+
+  # 2. Pulse Cluster Health & Readiness Probes (HTTP Ingress)
+  - id: pulse_health_cluster
+    pathPrefix: /pulse
+    upstream: http://127.0.0.1:3001
+    stripPrefix: true
+    websocket: false
+    methods: [GET]
+    auth:
+      mode: public
+    timeouts:
+      connectTimeoutMs: 1000
+      responseTimeoutMs: 2000
