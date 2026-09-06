@@ -1055,15 +1055,16 @@ Implementation must proceed sequentially through the following thirteen gated ph
 
 ---
 
-### Phase 8: RouteX Edge Gateway Extension & Integration
+### Phase 8: RouteX Edge Gateway Extension & Integration (Completed)
 - **Goal**: Integrate RouteX as the production edge gateway in front of the Pulse cluster.
-- **Key Deliverables**:
-  - Audit RouteX for WebSocket upgrade proxy support.
-  - **Extend RouteX** to support RFC 6455 WebSocket upgrades and bidirectional TCP tunneling if missing or incomplete.
-  - Configure RouteX upstream routing, edge rate limiting, and security header injection.
-  - Wire RouteX $\rightarrow$ Pulse cluster in Docker Compose.
-- **Exit Criteria**:
-  - Clients establish secure WebSocket connections to RouteX port 80/443, RouteX upgrades and proxies the socket to Pulse, and end-to-end distributed messaging functions flawlessly.
+- **Key Deliverables Completed**:
+  - **RFC 6455 Duplex Edge Proxy in RouteX**: Transparent full-duplex TCP stream piping for WebSocket upgrades, preserving subprotocols, extensions, and head buffers.
+  - **Health-Aware Dynamic Failover**: `UpstreamHealthTracker` polling upstream `/readyz` endpoints; bounded pre-101 failover (maximum 1 retry across multi-node upstreams); strict post-101 zero-retry invariant.
+  - **Trusted Proxy Boundary in Pulse**: Immediate TCP peer socket verification; authoritative `X-Forwarded-For` resolution when originating from trusted proxies; `X-Request-Id` correlation.
+  - **Header Hygiene**: Stripping of client-spoofed identity headers (`x-user-id`, `x-user-roles`, `x-auth-type`, `x-gateway-*`, `x-internal-*`).
+  - **Distributed Redis Failover Verification**: End-to-end multi-node integration suite (`tests/integration/RouteXIntegration.test.ts`) validating seamless failover and real Redis Pub/Sub continuity.
+- **Exit Criteria Satisfied**:
+  - All 8 comprehensive integration scenarios passed against live Redis 7 and dual Pulse instances.
 
 ---
 

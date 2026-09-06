@@ -4,7 +4,7 @@ A production-oriented real-time messaging engine built with WebSockets, structur
 
 ---
 
-## Current Status: Phase 7 Complete (Failure Injection & Chaos Testing)
+## Current Status: Phase 8 Complete (RouteX Edge Gateway Integration)
 
 | Phase | Milestone | Status | Description |
 | :--- | :--- | :--- | :--- |
@@ -15,7 +15,7 @@ A production-oriented real-time messaging engine built with WebSockets, structur
 | **Phase 4** | **Distributed Presence Engine** | ✅ Done | Ephemeral Redis ZSET connection leases, atomic Lua script state transitions (`ONLINE`/`OFFLINE`), multi-device session aggregation, periodic lease refresh loop, room-scoped rosters. |
 | **Phase 6** | **Observability & Benchmarking** | ✅ Done | Prometheus text exposition (`/metrics`), decoupled `/healthz` & `/readyz` probes, low-cardinality enforcement, event loop delay monitoring, nanosecond local timing, cross-node latency with clock skew clamping, and standalone 5-profile benchmark CLI (`pulse-bench.ts`). |
 | **Phase 7** | **Failure & Resilience Engineering** | ✅ Done | Out-of-band fault injection via FaultProxy, RFC 6455 frame filtering, 7 deterministic chaos drills, real Redis requirements, and pulse-chaos CLI harness. |
-| **Phase 8** | **RouteX Edge Gateway Integration** | ⏳ Planned | Upstream RFC 6455 WebSocket proxying and edge routing via RouteX. |
+| **Phase 8** | **RouteX Edge Gateway Integration** | ✅ Done | Edge RFC 6455 WebSocket proxying, pre-101 connect-time failover, trusted proxy boundary, and distributed multi-node failover via RouteX. |
 | **Phase 9** | **Demonstration Client Application** | ⏳ Planned | Minimal testing client showcasing room chat, direct messaging, and node metadata. |
 | **Phase 10** | **Infrastructure Control Center** | ⏳ Planned | Live dashboard displaying cluster health, throughput, latency, and kill switches. |
 | **Phase 11** | **End-to-End Hardening & CSO Audit** | ⏳ Planned | Comprehensive security audit, payload limits, penetration testing. |
@@ -463,4 +463,98 @@ npm run test:chaos
 | **ACK Loss** | Dropped Delivery ACK | Exactly-Once Broadcast | **Retransmitted \| 1 Copy Delivered** | ✅ PASS |
 | **Slow Consumer** | Buffer Saturation ($> 32\text{ KB}$) | RFC 6455 Code `1008` Eviction | **MTTD: $355\text{ ms}$ \| Code `1008`** | ✅ PASS |
 | **Graceful Drain** | Rolling Shutdown | `/readyz` 503 & Code `1001` | **MTTD: $3.2\text{ ms}$ \| MTTR: $33.4\text{ ms}$** | ✅ PASS |
+
+---
+
+## Phase 8: RouteX Edge Gateway Integration Architecture & Guarantees
+
+In Phase 8, Pulse integrates with **RouteX**, a high-performance Edge API Gateway & Reverse Proxy, establishing an enterprise ingress architecture for realtime WebSockets:
+
+```text
+       Internet Clients (Browser / Mobile / CLI)
+                          │
+                          │ HTTP/1.1 Upgrade: websocket
+                          ▼
+┌───────────────────────────────────────────────────────────────┐
+│              RouteX Edge API Gateway (:8080)                  │
+│                                                               │
+│   ┌───────────────────────────────────────────────────────┐   │
+│   │  Edge Upgrade Pipeline & Security Boundary            │   │
+│   │  1. Request ID correlation (X-Request-Id)             │   │
+│   │  2. RFC 6455 Header Validation (Upgrade / Key)        │   │
+│   │  3. Tier-1 IP Sliding-Window Rate Limiting (Redis)    │   │
+│   │  4. Edge Auth & Identity Token Validation             │   │
+│   │  5. Header Hygiene (Strip forged identity headers)    │   │
+│   │  6. Subprotocol & Extension pass-through              │   │
+│   │  7. Bounded Pre-101 Failover across Upstream Nodes    │   │
+│   └──────────────────────────┬────────────────────────────┘   │
+│                              │                                │
+│   ┌──────────────────────────┴────────────────────────────┐   │
+│   │         UpstreamHealthTracker & Round-Robin           │   │
+│   │  • Background /readyz health polling (2000ms)         │   │
+│   │  • Dynamic node health scoring & degradation tracking │   │
+│   │  • Post-101 Ironclad Invariant: Zero Retries in Tunnel│   │
+│   └───────────────────────────────────────────────────────┘   │
+└───────────────┬───────────────────────────────┬───────────────┘
+                │                               │
+        Upstream Node 1                 Upstream Node 2
+      (http://node1:9341)             (http://node2:9342)
+                │                               │
+                ▼                               ▼
+┌───────────────────────────────┐┌───────────────────────────────┐
+│         Pulse Node 1          ││         Pulse Node 2          │
+│                               ││                               │
+│ • Immediate TCP Peer Check    ││ • Immediate TCP Peer Check    │
+│ • Trusted Proxy Authorization ││ • Trusted Proxy Authorization │
+│ • Authoritative X-Forwarded   ││ • Authoritative X-Forwarded   │
+│ • Local Connection Manager    ││ • Local Connection Manager    │
+│ • Room / Broadcast Dispatch   ││ • Room / Broadcast Dispatch   │
+└───────────────┬───────────────┘└───────────────┬───────────────┘
+                │                               │
+                └───────────────┬───────────────┘
+                                │
+                                ▼
+               ┌─────────────────────────────────┐
+               │    Distributed Redis Pub/Sub    │
+               │   & Ephemeral Presence Leases   │
+               └─────────────────────────────────┘
+
+### Core Invariants & Architectural Guarantees
+
+1. **RFC 6455 Transparent Duplex TCP Tunneling**:
+   - RouteX terminates the HTTP upgrade handshake at the edge, validates the upgrade request, forwards negotiated headers, and establishes a zero-buffer native bidirectional stream pipe (`clientSocket.pipe(upstreamSocket); upstreamSocket.pipe(clientSocket)`).
+   - Preserves `Sec-WebSocket-Protocol` (including Pulse's `token.<val>` auth subprotocol format) and `Sec-WebSocket-Extensions` without altering, inventing, or decompressing extensions.
+   - Preserves pre-parsed Node.js upgrade `head` and upstream upgrade `head` buffers byte-for-byte.
+
+2. **Bounded Pre-101 Connect-Time Failover**:
+   - Before HTTP 101 Switching Protocols is returned, connection errors (`ECONNREFUSED`, `ETIMEDOUT`) and upstream 5xx responses (e.g. `503 Service Unavailable` from a draining node) automatically fail over to the next healthy candidate upstream.
+   - Bounded to at most 1 failover retry (maximum 2 total upstream attempts).
+   - Failed upstreams are immediately marked degraded in `UpstreamHealthTracker`.
+
+3. **Ironclad Post-101 Invariant (Zero-Retry Tunnel)**:
+   - Once HTTP 101 Switching Protocols is emitted, the state transitions irreversibly to `ACTIVE_TUNNEL`.
+   - Under no circumstances will RouteX retry, reselect, or duplicate an established WebSocket tunnel.
+   - If an upstream node crashes post-upgrade, the physical socket closes with RFC 6455 `1006 Abnormal Closure`. The client detects the drop and reconnects through RouteX; RouteX routes the new handshake to a healthy surviving node; and distributed Redis Pub/Sub resumes message delivery.
+
+4. **Explicit Trusted Proxy Boundary in Pulse**:
+   - Pulse enforces strict IP resolution via `trustProxy: boolean` and `trustedProxies: string[]`.
+   - Pulse verifies the immediate TCP peer (`req.socket.remoteAddress`). If the immediate peer is not in `trustedProxies`, incoming `X-Forwarded-For` headers are strictly ignored, and the immediate peer address is used authoritatively.
+   - RouteX unconditionally strips untrusted downstream identity headers (`x-user-id`, `x-user-roles`, `x-auth-type`, `x-gateway-*`, `x-internal-*`) to prevent spoofing.
+
+5. **Graceful Connection Draining**:
+   - RouteX tracks all active WebSocket tunnels. During shutdown, RouteX initiates half-duplex closure via `socket.end()` on both sides, allowing in-flight frames to drain before forceful termination after the shutdown timeout.
+
+### Verified Test Matrix
+
+| Category | Test Description | Result |
+| :--- | :--- | :--- |
+| **Upgrade Handshake** | RFC 6455 Upgrade & Authoritative Pulse Token Authentication | ✅ PASS |
+| **Auth Rejection** | Invalid token rejection (Pulse returns 401, RouteX forwards to client) | ✅ PASS |
+| **Protocol Fidelity** | `Sec-WebSocket-Protocol` & `Sec-WebSocket-Extensions` pass-through | ✅ PASS |
+| **Header Hygiene** | Strips forged client identity headers, injects `X-Request-Id` & `X-Forwarded-For` | ✅ PASS |
+| **Head Buffer** | Byte-for-byte fidelity of upgrade head buffer | ✅ PASS |
+| **End-to-End Chat** | Full-duplex room broadcast and delivery ACK confirmation through RouteX | ✅ PASS |
+| **Edge Rate Limit** | Sliding-window IP rate limiting on upgrade requests (HTTP 429) | ✅ PASS |
+| **Distributed Failover** | Node crash $\rightarrow$ client reconnects via RouteX $\rightarrow$ new session on Node 2 $\rightarrow$ Redis Pub/Sub delivery continues | ✅ PASS |
+
 
