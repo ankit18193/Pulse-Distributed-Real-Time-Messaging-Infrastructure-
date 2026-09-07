@@ -557,4 +557,4 @@ In Phase 8, Pulse integrates with **RouteX**, a high-performance Edge API Gatewa
 | **Edge Rate Limit** | Sliding-window IP rate limiting on upgrade requests (HTTP 429) | ✅ PASS |
 | **Distributed Failover** | Node crash $\rightarrow$ client reconnects via RouteX $\rightarrow$ new session on Node 2 $\rightarrow$ Redis Pub/Sub delivery continues | ✅ PASS |
 
-
+the things will be added soon 
