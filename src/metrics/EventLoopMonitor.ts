@@ -71,11 +71,23 @@ export class EventLoopMonitor {
     const p99Sec = (this.histogram.percentile(99) || 0) / 1e9;
     const maxSec = (this.histogram.max || 0) / 1e9;
 
+    const safeMean = isNaN(meanSec) ? 0 : meanSec;
+    const safeP50 = isNaN(p50Sec) ? 0 : p50Sec;
+    const safeP99 = isNaN(p99Sec) ? 0 : p99Sec;
+    let safeMax = isNaN(maxSec) ? 0 : maxSec;
+
+    if (safeMax < safeP99) {
+      safeMax = safeP99;
+    }
+    if (safeMax < safeP50) {
+      safeMax = safeP50;
+    }
+
     return {
-      meanSec: isNaN(meanSec) ? 0 : meanSec,
-      p50Sec: isNaN(p50Sec) ? 0 : p50Sec,
-      p99Sec: isNaN(p99Sec) ? 0 : p99Sec,
-      maxSec: isNaN(maxSec) ? 0 : maxSec
+      meanSec: safeMean,
+      p50Sec: safeP50,
+      p99Sec: safeP99,
+      maxSec: safeMax
     };
   }
 }

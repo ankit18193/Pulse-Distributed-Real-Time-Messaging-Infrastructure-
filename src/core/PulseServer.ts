@@ -14,6 +14,7 @@ import { PresenceManager } from '../redis/PresenceManager.js';
 import { PulseMetricsRegistry, PrometheusSerializer, EventLoopMonitor, Gauge, registerWebSocketMetrics } from '../metrics/index.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
+import type { RouteXGatewayServer } from '@ankit18193/routex-gateway';
 
 export interface PulseServerHooks {
   onConnectionAuthenticated?: (connection: Connection) => void;
@@ -28,6 +29,7 @@ export interface PulseServerDependencies {
   redisPubSubManager?: RedisPubSubManager;
   presenceManager?: PresenceManager;
   metricsRegistry?: PulseMetricsRegistry;
+  routexGateway?: RouteXGatewayServer;
 }
 
 export class PulseServer {
@@ -43,6 +45,7 @@ export class PulseServer {
   private readonly channelRegistry?: ChannelRegistry;
   private presenceManager?: PresenceManager;
   private readonly metricsRegistry: PulseMetricsRegistry;
+  private readonly routexGateway?: RouteXGatewayServer;
   private eventLoopMonitor: EventLoopMonitor | null = null;
   private eventLoopTimer: NodeJS.Timeout | null = null;
   private gaugeEventLoopMean: Gauge | null = null;
@@ -63,6 +66,7 @@ export class PulseServer {
     this.config = config;
     this.hooks = hooks;
     this.authenticator = new Authenticator(config.authSecret);
+    this.routexGateway = deps.routexGateway;
     this.metricsRegistry = deps.metricsRegistry ?? new PulseMetricsRegistry();
 
     if (this.config.metricsEnabled !== false) {
@@ -252,6 +256,10 @@ export class PulseServer {
     return this.isRunning;
   }
 
+  public getRouteXGateway(): RouteXGatewayServer | undefined {
+    return this.routexGateway;
+  }
+
   public async start(): Promise<void> {
     if (this.isRunning) {
       throw new Error('PulseServer is already running');
@@ -312,43 +320,86 @@ export class PulseServer {
     }
 
     return new Promise((resolve, reject) => {
-      try {
-        this.httpServer = http.createServer((req, res) => {
-          this.handleHttpRequest(req, res);
-        });
-
-        // Construct WebSocketServer without its own HTTP server port (we manage upgrade manually)
-        this.wss = new WebSocketServer({
-          noServer: true,
-          maxPayload: this.config.maxPayloadBytes
-        });
-
-        this.httpServer.on('upgrade', (req: http.IncomingMessage, socket, head) => {
-          if (this.isShuttingDown) {
-            socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
-            return;
+      (async () => {
+        try {
+          if (this.routexGateway) {
+            await this.routexGateway.ready();
           }
 
-          const authResult = this.authenticator.authenticateRequest(req);
-          if (!authResult.authenticated) {
-            this.metricsRegistry.getCounter('pulse_connections_total')?.inc({ status: 'rejected' });
-            const body = JSON.stringify({ error: authResult.error || 'Unauthorized' });
-            socket.end(
-              'HTTP/1.1 401 Unauthorized\r\n' +
-                'Content-Type: application/json\r\n' +
-                `Content-Length: ${Buffer.byteLength(body)}\r\n` +
-                'Connection: close\r\n\r\n' +
-                body
-            );
-            return;
-          }
-
-          this.metricsRegistry.getCounter('pulse_connections_total')?.inc({ status: 'success' });
-
-          this.wss!.handleUpgrade(req, socket, head, (ws) => {
-            this.handleAuthenticatedConnection(ws, req, authResult);
+          this.httpServer = http.createServer(async (req, res) => {
+            if (this.routexGateway) {
+              try {
+                const handled = await this.routexGateway.handleRequest(req, res);
+                if (handled) {
+                  return;
+                }
+              } catch (err) {
+                logger.error('Error in embedded RouteX gateway request handling', {
+                  component: 'PulseServer',
+                  event: 'ROUTEX_HANDLE_REQUEST_ERROR',
+                  error: err instanceof Error ? err.message : String(err)
+                });
+                if (!res.headersSent) {
+                  res.writeHead(500, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: 'Internal Server Error', message: 'Gateway error' }));
+                }
+                return;
+              }
+            }
+            this.handleHttpRequest(req, res);
           });
-        });
+
+          // Construct WebSocketServer without its own HTTP server port (we manage upgrade manually)
+          this.wss = new WebSocketServer({
+            noServer: true,
+            maxPayload: this.config.maxPayloadBytes
+          });
+
+          this.httpServer.on('upgrade', async (req: http.IncomingMessage, socket, head) => {
+            if (this.isShuttingDown) {
+              socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+              return;
+            }
+
+            if (this.routexGateway) {
+              try {
+                const handled = await this.routexGateway.handleUpgrade(req, socket, head);
+                if (handled) {
+                  return;
+                }
+              } catch (err) {
+                logger.error('Error in embedded RouteX gateway upgrade handling', {
+                  component: 'PulseServer',
+                  event: 'ROUTEX_HANDLE_UPGRADE_ERROR',
+                  error: err instanceof Error ? err.message : String(err)
+                });
+                if (!socket.destroyed) {
+                  socket.destroy();
+                }
+                return;
+              }
+            }
+
+            const authResult = this.authenticator.authenticateRequest(req);
+            if (!authResult.authenticated) {
+              this.metricsRegistry.getCounter('pulse_connections_total')?.inc({ status: 'rejected' });
+              const body = JSON.stringify({ error: authResult.error || 'Unauthorized' });
+              socket.end(
+                'HTTP/1.1 401 Unauthorized\r\n' +
+                  'Content-Type: application/json\r\n' +
+                  `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+                  'Connection: close\r\n\r\n' +
+                  body
+              );
+              return;
+            }
+
+            this.metricsRegistry.getCounter('pulse_connections_total')?.inc({ status: 'success' });
+
+            this.wss!.handleUpgrade(req, socket, head, (ws) => {
+              this.handleAuthenticatedConnection(ws, req, authResult);
+            });
+          });
 
         this.wss.on('error', (err: Error) => {
           logger.error('WebSocketServer encountered error', {
@@ -403,8 +454,9 @@ export class PulseServer {
       } catch (error) {
         reject(error);
       }
-    });
-  }
+    })();
+  });
+}
 
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     const rawUrl = req.url || '';
@@ -745,7 +797,14 @@ export class PulseServer {
 
     // 3. Close WebSocket server and HTTP server
     return new Promise((resolve) => {
-      const shutdownTimer = setTimeout(() => {
+      const shutdownTimer = setTimeout(async () => {
+        if (this.routexGateway) {
+          try {
+            await this.routexGateway.close();
+          } catch {
+            // best-effort
+          }
+        }
         this.cleanupAndFinalize();
         resolve();
       }, gracePeriodMs);
@@ -753,21 +812,46 @@ export class PulseServer {
       if (this.wss) {
         this.wss.close(() => {
           if (this.httpServer) {
-            this.httpServer.close(() => {
+            this.httpServer.close(async () => {
               clearTimeout(shutdownTimer);
+              if (this.routexGateway) {
+                try {
+                  await this.routexGateway.close();
+                } catch {
+                  // best-effort
+                }
+              }
               this.cleanupAndFinalize();
               resolve();
             });
           } else {
             clearTimeout(shutdownTimer);
-            this.cleanupAndFinalize();
-            resolve();
+            (async () => {
+              if (this.routexGateway) {
+                try {
+                  await this.routexGateway.close();
+                } catch {
+                  // best-effort
+                }
+              }
+              this.cleanupAndFinalize();
+              resolve();
+            })();
           }
         });
       } else {
         clearTimeout(shutdownTimer);
-        this.cleanupAndFinalize();
-        resolve();
+        (async () => {
+          if (this.routexGateway) {
+            try {
+              await this.routexGateway.close();
+            } catch {
+              // best-effort
+            }
+          }
+          this.cleanupAndFinalize();
+          resolve();
+        })();
       }
     });
   }
