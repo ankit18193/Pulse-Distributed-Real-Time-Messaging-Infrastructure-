@@ -21,6 +21,8 @@ export interface MessageDispatcherOptions {
   presenceManager?: PresenceManager;
   metricsRegistry?: PulseMetricsRegistry;
   instanceId: string;
+  maxRoomsPerConnection?: number;
+  maxRoomIdLength?: number;
 }
 
 export class MessageDispatcher extends EventEmitter {
@@ -31,6 +33,8 @@ export class MessageDispatcher extends EventEmitter {
   private presenceManager?: PresenceManager;
   private metricsRegistry?: PulseMetricsRegistry;
   private readonly instanceId: string;
+  private readonly maxRoomsPerConnection: number;
+  private readonly maxRoomIdLength: number;
 
   constructor(options: MessageDispatcherOptions) {
     super();
@@ -42,6 +46,8 @@ export class MessageDispatcher extends EventEmitter {
     this.presenceManager = options.presenceManager;
     this.metricsRegistry = options.metricsRegistry;
     this.instanceId = options.instanceId;
+    this.maxRoomsPerConnection = options.maxRoomsPerConnection ?? 256;
+    this.maxRoomIdLength = options.maxRoomIdLength ?? 128;
 
     if (this.presenceManager) {
       this.wireLocalRosterProvider(this.presenceManager);
@@ -380,6 +386,34 @@ export class MessageDispatcher extends EventEmitter {
     const startHr = process.hrtime.bigint();
     sender.touch();
 
+    // Inbound Rate Limiting Check (Token Bucket)
+    if (!sender.consumeRateLimit()) {
+      this.metricsRegistry?.getCounter('pulse_rate_limit_exceeded_total')?.inc({ direction: 'inbound' });
+      this.metricsRegistry?.getCounter('pulse_messages_dropped_total')?.inc({ reason: 'rate_limit_exceeded' });
+
+      const rateLimitError: PulseEventEnvelope = {
+        eventId: generateUUIDv7(),
+        type: 'SYS_ERROR',
+        timestamp: Date.now(),
+        senderId: 'system',
+        payload: {
+          code: 'RATE_LIMIT_EXCEEDED',
+          message: 'Inbound message rate limit exceeded. Slow down.'
+        }
+      };
+      sender.send(rateLimitError);
+
+      if (sender.recordRateViolation()) {
+        logger.warn('Connection exceeded rate limit abuse threshold; terminating with RFC 1008', {
+          component: 'MessageDispatcher',
+          connectionId: sender.connectionId,
+          userId: sender.userId
+        });
+        sender.close(1008, 'Rate limit abuse threshold exceeded');
+      }
+      return;
+    }
+
     try {
       const validation = EventValidator.validateIncoming(rawData, sender.userId);
 
@@ -528,7 +562,41 @@ export class MessageDispatcher extends EventEmitter {
     sender: Connection,
     envelope: PulseEventEnvelope
   ): Promise<void> {
-    const roomId = envelope.target!.roomId!;
+    const roomId = envelope.target?.roomId;
+    if (!roomId || roomId.length > this.maxRoomIdLength || !/^[a-zA-Z0-9:_\.\-]+$/.test(roomId)) {
+      const errAck: PulseEventEnvelope = {
+        eventId: generateUUIDv7(),
+        type: 'SYS_ERROR',
+        timestamp: Date.now(),
+        senderId: 'system',
+        correlationId: envelope.correlationId || envelope.eventId,
+        target: { roomId: roomId || '' },
+        payload: {
+          code: 'INVALID_ROOM_ID',
+          message: `Room ID exceeds maximum length (${this.maxRoomIdLength}) or contains invalid characters.`
+        }
+      };
+      sender.send(errAck);
+      return;
+    }
+
+    if (!sender.hasRoom(roomId) && sender.getRooms().length >= this.maxRoomsPerConnection) {
+      const errAck: PulseEventEnvelope = {
+        eventId: generateUUIDv7(),
+        type: 'SYS_ERROR',
+        timestamp: Date.now(),
+        senderId: 'system',
+        correlationId: envelope.correlationId || envelope.eventId,
+        target: { roomId },
+        payload: {
+          code: 'MAX_ROOMS_EXCEEDED',
+          message: `Maximum room subscription limit (${this.maxRoomsPerConnection}) exceeded for this connection.`
+        }
+      };
+      sender.send(errAck);
+      return;
+    }
+
     this.roomManager.joinRoom(roomId, sender.connectionId);
     sender.joinRoom(roomId);
 
@@ -583,19 +651,48 @@ export class MessageDispatcher extends EventEmitter {
     sender: Connection,
     envelope: PulseEventEnvelope
   ): Promise<void> {
-    const rooms = (envelope.payload as { rooms: string[] }).rooms;
+    const rooms = (envelope.payload as { rooms?: string[] })?.rooms;
+    if (!Array.isArray(rooms)) {
+      return;
+    }
+
+    if (sender.getRooms().length >= this.maxRoomsPerConnection) {
+      const errAck: PulseEventEnvelope = {
+        eventId: generateUUIDv7(),
+        type: 'SYS_ERROR',
+        timestamp: Date.now(),
+        senderId: 'system',
+        correlationId: envelope.correlationId || envelope.eventId,
+        payload: {
+          code: 'MAX_ROOMS_EXCEEDED',
+          message: `Maximum room subscription limit (${this.maxRoomsPerConnection}) exceeded for this connection.`
+        }
+      };
+      sender.send(errAck);
+      return;
+    }
+
     const joinedRooms: string[] = [];
+    const currentCount = sender.getRooms().length;
+    let newlyAdded = 0;
 
     for (const roomId of rooms) {
-      const trimmed = roomId.trim();
-      if (trimmed) {
-        this.roomManager.joinRoom(trimmed, sender.connectionId);
-        sender.joinRoom(trimmed);
-        joinedRooms.push(trimmed);
-
-        if (this.presenceManager && sender.userId) {
-          await this.presenceManager.addRoomMember(trimmed, sender.userId);
+      const trimmed = typeof roomId === 'string' ? roomId.trim() : '';
+      if (!trimmed || trimmed.length > this.maxRoomIdLength || !/^[a-zA-Z0-9:_\.\-]+$/.test(trimmed)) {
+        continue;
+      }
+      if (!sender.hasRoom(trimmed)) {
+        if (currentCount + newlyAdded >= this.maxRoomsPerConnection) {
+          break;
         }
+        newlyAdded++;
+      }
+      this.roomManager.joinRoom(trimmed, sender.connectionId);
+      sender.joinRoom(trimmed);
+      joinedRooms.push(trimmed);
+
+      if (this.presenceManager && sender.userId) {
+        await this.presenceManager.addRoomMember(trimmed, sender.userId);
       }
     }
 

@@ -2,6 +2,7 @@ import { WebSocket } from 'ws';
 import { ConnectionContext } from '../types/index.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
 import { logger } from '../utils/logger.js';
+import { TokenBucket } from '../utils/TokenBucket.js';
 import type { PulseMetricsRegistry } from '../metrics/PulseMetricsRegistry.js';
 import { BOUNDED_EVENT_TYPES } from '../metrics/types.js';
 
@@ -16,6 +17,7 @@ export class Connection {
   public readonly remoteAddress: string;
   public readonly maxBufferedAmountBytes: number;
   private readonly metricsRegistry?: PulseMetricsRegistry;
+  private readonly tokenBucket: TokenBucket;
   private readonly rooms: Set<string> = new Set();
   private isCleanedUp: boolean = false;
 
@@ -27,6 +29,8 @@ export class Connection {
     remoteAddress?: string;
     maxBufferedAmountBytes?: number;
     metricsRegistry?: PulseMetricsRegistry;
+    inboundRateLimitBurst?: number;
+    inboundRateLimitMax?: number;
   }) {
     this.connectionId = options.connectionId ?? generateUUIDv7();
     this.userId = options.userId;
@@ -35,12 +39,28 @@ export class Connection {
     this.remoteAddress = options.remoteAddress ?? 'unknown';
     this.maxBufferedAmountBytes = options.maxBufferedAmountBytes ?? 1024 * 1024;
     this.metricsRegistry = options.metricsRegistry;
+    this.tokenBucket = new TokenBucket(
+      options.inboundRateLimitBurst ?? 50,
+      options.inboundRateLimitMax ?? 100
+    );
     this.connectedAt = Date.now();
     this.lastSeenAt = this.connectedAt;
   }
 
   public touch(): void {
     this.lastSeenAt = Date.now();
+  }
+
+  public consumeRateLimit(cost: number = 1): boolean {
+    return this.tokenBucket.tryConsume(cost);
+  }
+
+  public recordRateViolation(threshold: number = 10, windowMs: number = 10000): boolean {
+    return this.tokenBucket.recordViolation(threshold, windowMs);
+  }
+
+  public getRateLimitTokens(): number {
+    return this.tokenBucket.getTokens();
   }
 
   public send(data: string | object): boolean {
