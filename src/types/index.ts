@@ -30,6 +30,13 @@ export interface PulseConfig {
   metricsEnabled?: boolean;
   metricsPath?: string;
   eventLoopMonitorIntervalMs?: number;
+  maxConnections?: number;
+  maxRoomsPerConnection?: number;
+  maxRoomIdLength?: number;
+  allowedOrigins?: string[];
+  inboundRateLimitMax?: number;
+  inboundRateLimitBurst?: number;
+  drainTimeoutMs?: number;
 }
 
 export type EventType =

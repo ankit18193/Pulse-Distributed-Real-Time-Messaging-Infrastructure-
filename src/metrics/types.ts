@@ -53,12 +53,17 @@ export const BOUNDED_REASONS = [
   'unauthorized',
   'duplicate',
   'stale_presence',
-  'invalid_format'
+  'invalid_format',
+  'max_connections',
+  'origin_forbidden',
+  'draining',
+  'auth_failed',
+  'rate_limit_exceeded'
 ] as const;
 
 export type ReasonLabel = typeof BOUNDED_REASONS[number];
 
-export const BOUNDED_DIRECTIONS = ['published', 'received'] as const;
+export const BOUNDED_DIRECTIONS = ['published', 'received', 'inbound', 'outbound'] as const;
 export type DirectionLabel = typeof BOUNDED_DIRECTIONS[number];
 
 /**

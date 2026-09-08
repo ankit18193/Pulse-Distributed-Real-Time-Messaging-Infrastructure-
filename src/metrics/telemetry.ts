@@ -38,6 +38,26 @@ export function registerWebSocketMetrics(registry: PulseMetricsRegistry): void {
     );
   }
 
+  if (!registry.getMetric('pulse_connections_rejected_total')) {
+    registry.register(
+      new Counter({
+        name: 'pulse_connections_rejected_total',
+        help: 'Cumulative rejected connection upgrades by reason',
+        labelNames: ['reason']
+      })
+    );
+  }
+
+  if (!registry.getMetric('pulse_rate_limit_exceeded_total')) {
+    registry.register(
+      new Counter({
+        name: 'pulse_rate_limit_exceeded_total',
+        help: 'Cumulative messages dropped due to rate limiting by direction',
+        labelNames: ['direction']
+      })
+    );
+  }
+
   if (!registry.getMetric('pulse_rooms_active')) {
     registry.register(
       new Gauge({

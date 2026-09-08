@@ -6,12 +6,52 @@ import type { PulseMetricsRegistry } from '../metrics/PulseMetricsRegistry.js';
 export class ConnectionManager {
   private readonly connections: Map<string, Connection> = new Map();
   private readonly userConnections: Map<string, Set<string>> = new Map();
+  private pendingConnections: number = 0;
+  private maxConnections: number = Infinity;
   private channelRegistry?: ChannelRegistry;
   private metricsRegistry?: PulseMetricsRegistry;
 
-  constructor(channelRegistry?: ChannelRegistry, metricsRegistry?: PulseMetricsRegistry) {
+  constructor(
+    channelRegistry?: ChannelRegistry,
+    metricsRegistry?: PulseMetricsRegistry,
+    maxConnections: number = Infinity
+  ) {
     this.channelRegistry = channelRegistry;
     this.metricsRegistry = metricsRegistry;
+    this.maxConnections = maxConnections;
+  }
+
+  public setMaxConnections(max: number): void {
+    this.maxConnections = max > 0 ? max : Infinity;
+  }
+
+  public getMaxConnections(): number {
+    return this.maxConnections;
+  }
+
+  public getPendingCount(): number {
+    return this.pendingConnections;
+  }
+
+  /**
+   * Atomically attempts to reserve an admission slot before upgrade completes.
+   * Ensures simultaneous concurrent upgrades cannot race past maxConnections.
+   */
+  public tryAcquireSlot(): boolean {
+    if (this.connections.size + this.pendingConnections >= this.maxConnections) {
+      return false;
+    }
+    this.pendingConnections++;
+    return true;
+  }
+
+  /**
+   * Releases a reserved admission slot if an upgrade fails or is rejected before registration.
+   */
+  public releasePendingSlot(): void {
+    if (this.pendingConnections > 0) {
+      this.pendingConnections--;
+    }
   }
 
   public setMetricsRegistry(metricsRegistry: PulseMetricsRegistry): void {
@@ -27,6 +67,9 @@ export class ConnectionManager {
   }
 
   public addConnection(connection: Connection): void {
+    if (this.pendingConnections > 0) {
+      this.pendingConnections--;
+    }
     this.connections.set(connection.connectionId, connection);
 
     let userConns = this.userConnections.get(connection.userId);

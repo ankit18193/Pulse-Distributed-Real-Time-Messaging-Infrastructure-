@@ -77,6 +77,47 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     overrides.eventLoopMonitorIntervalMs ??
     parseInt(process.env.EVENT_LOOP_MONITOR_INTERVAL_MS || '10000', 10);
 
+  // Production Hardening configuration (Phase 10)
+  const maxConnections =
+    overrides.maxConnections ??
+    parseInt(process.env.MAX_CONNECTIONS || '10000', 10);
+  const maxRoomsPerConnection =
+    overrides.maxRoomsPerConnection ??
+    parseInt(process.env.MAX_ROOMS_PER_CONNECTION || '100', 10);
+  const maxRoomIdLength =
+    overrides.maxRoomIdLength ??
+    parseInt(process.env.MAX_ROOM_ID_LENGTH || '128', 10);
+
+  const allowedOrigins =
+    overrides.allowedOrigins ??
+    (process.env.ALLOWED_ORIGINS
+      ? process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+      : nodeEnv === 'production' ? [] : ['*']);
+
+  const inboundRateLimitMax =
+    overrides.inboundRateLimitMax ??
+    parseInt(process.env.INBOUND_RATE_LIMIT_MAX || '100', 10);
+  const inboundRateLimitBurst =
+    overrides.inboundRateLimitBurst ??
+    parseInt(process.env.INBOUND_RATE_LIMIT_BURST || '50', 10);
+
+  const drainTimeoutMs =
+    overrides.drainTimeoutMs ??
+    parseInt(process.env.DRAIN_TIMEOUT_MS || '2000', 10);
+
+  if (nodeEnv === 'production') {
+    const knownDefaults = [
+      'pulse-dev-secret-key-32chars-min',
+      'pulse-distributed-realtime-secret-key-32chars!'
+    ];
+    if (!authSecret || knownDefaults.includes(authSecret)) {
+      throw new Error('Production deployment must set a strong, non-default AUTH_SECRET.');
+    }
+    if (authSecret.length < 32) {
+      throw new Error('AUTH_SECRET must be at least 32 characters long in production mode.');
+    }
+  }
+
   if (isNaN(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid PORT configuration: ${port}`);
   }
@@ -93,6 +134,30 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     throw new Error(
       `Invalid PRESENCE_FLUSH_INTERVAL_MS configuration (${presenceFlushIntervalMs}) must be >= 500 and < presenceTtlMs (${presenceTtlMs})`
     );
+  }
+
+  if (isNaN(maxConnections) || maxConnections < 1) {
+    throw new Error(`Invalid MAX_CONNECTIONS configuration: ${maxConnections}`);
+  }
+
+  if (isNaN(maxRoomsPerConnection) || maxRoomsPerConnection < 1) {
+    throw new Error(`Invalid MAX_ROOMS_PER_CONNECTION configuration: ${maxRoomsPerConnection}`);
+  }
+
+  if (isNaN(maxRoomIdLength) || maxRoomIdLength < 8) {
+    throw new Error(`Invalid MAX_ROOM_ID_LENGTH configuration: ${maxRoomIdLength}`);
+  }
+
+  if (isNaN(inboundRateLimitMax) || inboundRateLimitMax < 1) {
+    throw new Error(`Invalid INBOUND_RATE_LIMIT_MAX configuration: ${inboundRateLimitMax}`);
+  }
+
+  if (isNaN(inboundRateLimitBurst) || inboundRateLimitBurst < 1) {
+    throw new Error(`Invalid INBOUND_RATE_LIMIT_BURST configuration: ${inboundRateLimitBurst}`);
+  }
+
+  if (isNaN(drainTimeoutMs) || drainTimeoutMs < 100) {
+    throw new Error(`Invalid DRAIN_TIMEOUT_MS configuration: ${drainTimeoutMs}`);
   }
 
   if (redisEnabled) {
@@ -136,6 +201,13 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     presenceFlushIntervalMs,
     metricsEnabled,
     metricsPath,
-    eventLoopMonitorIntervalMs
+    eventLoopMonitorIntervalMs,
+    maxConnections,
+    maxRoomsPerConnection,
+    maxRoomIdLength,
+    allowedOrigins,
+    inboundRateLimitMax,
+    inboundRateLimitBurst,
+    drainTimeoutMs
   };
 }
