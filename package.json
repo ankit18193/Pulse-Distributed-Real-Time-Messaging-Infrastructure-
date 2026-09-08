@@ -1,6 +1,6 @@
 {
   "name": "pulse-realtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pulse — Distributed Real-Time Messaging Infrastructure (Phase 1 Single-Node Engine)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
