@@ -10,8 +10,8 @@ describe('Chaos Drill: Redis Outage and Recovery (Real Redis Required)', () => {
   const redisPort = Number(process.env.REDIS_PORT) || 6379;
   const redisProxyPort = 6391;
 
-  const node1Port = 9221;
-  const node2Port = 9222;
+  const node1Port = 9225;
+  const node2Port = 9226;
   const authSecret = 'pulse-redis-chaos-secret-key-32chars!';
 
   let redisProxy: FaultProxy;
