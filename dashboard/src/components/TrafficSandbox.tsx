@@ -142,6 +142,7 @@ export const TrafficSandbox: React.FC = () => {
     ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${window.location.port === '5173' ? '8085' : (window.location.port || '8085')}/ws`
     : 'ws://127.0.0.1:8085/ws';
   const [serverUrl, setServerUrl] = useState(defaultWsUrl);
+  const [authToken, setAuthToken] = useState('');
   const [roomInput, setRoomInput] = useState('lobby');
   const [msgPayload, setMsgPayload] = useState('{"message": "Hello from Mission Control"}');
   const [directionFilter, setDirectionFilter] = useState<'all' | 'inbound' | 'outbound'>('all');
@@ -152,7 +153,11 @@ export const TrafficSandbox: React.FC = () => {
     if (isConnected || status === 'connecting') {
       disconnect();
     } else {
-      connect(serverUrl);
+      let finalUrl = serverUrl;
+      if (authToken.trim() && !finalUrl.includes('token=')) {
+        finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(authToken.trim())}`;
+      }
+      connect(finalUrl);
     }
   };
 
@@ -219,6 +224,17 @@ export const TrafficSandbox: React.FC = () => {
             >
               {isConnected ? 'Disconnect' : status === 'connecting' ? 'Connecting...' : 'Connect'}
             </button>
+          </div>
+
+          <div style={{ marginBottom: lastError ? '10px' : '0' }}>
+            <input
+              type="text"
+              value={authToken}
+              onChange={(e) => setAuthToken(e.target.value)}
+              disabled={isConnected}
+              style={{ width: '100%', fontSize: '11px', fontFamily: 'var(--font-mono)' }}
+              placeholder="Auth Token (optional, e.g. pulse-admin-token)"
+            />
           </div>
 
           {lastError && (
