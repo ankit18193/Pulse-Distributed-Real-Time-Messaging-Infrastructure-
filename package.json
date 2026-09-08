@@ -27,6 +27,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
+    "@ankit18193/routex-gateway": "^1.1.0",
     "dotenv": "^16.4.7",
     "ioredis": "^5.11.1",
     "ws": "^8.18.0"
