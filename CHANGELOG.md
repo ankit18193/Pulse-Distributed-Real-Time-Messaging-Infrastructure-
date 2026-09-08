@@ -5,6 +5,20 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-09
+
+### Added
+- **Atomic Connection Admission Control (`src/core/ConnectionManager.ts`)**: Synchronous slot reservation with `tryAcquireSlot()` and `releasePendingSlot()`, strictly preventing race conditions during concurrent upgrade spikes past `maxConnections`. Returns HTTP 503 (`max_connections`).
+- **Inbound Message Rate Limiting (`src/utils/TokenBucket.ts`)**: Allocation-free token bucket algorithm on established WebSocket connections. Protocol-compliant rejection returns `SYS_ERROR` frame with code `RATE_LIMIT_EXCEEDED` (never HTTP 429 over established sockets). Persistent abusive connections (>= 10 drops in 10s) are terminated with RFC 1008 ("Policy Violation").
+- **Cross-Site WebSocket Hijacking (CSWSH) Origin Defense (`src/utils/OriginMatcher.ts`)**: RFC 6455 Origin validation supporting exact hosts, wildcard subdomains (`https://*.domain.com`), and permissive dev/test wildcards (`*`). Rejects forbidden origins during upgrade with HTTP 403 (`origin_forbidden`). Non-browser native clients without Origin headers are permitted.
+- **Room Subscription Bounds & Input Sanitation (`src/core/MessageDispatcher.ts`)**: Validates room IDs against `^[a-zA-Z0-9:_\.\-]+$` and bounded length (`maxRoomIdLength`, default 128) returning `INVALID_ROOM_ID`. Limits max rooms per socket (`maxRoomsPerConnection`, default 256) returning `MAX_ROOMS_EXCEEDED`.
+- **Graceful Draining & Staged Handoff Window (`src/core/PulseServer.ts`)**: Staged handoff timeout (`drainTimeoutMs`, default 2000ms) with `/readyz` 503 status, active client broadcast of `SYS_SHUTDOWN`, and rejection of new connections. Force-closes unmigrated sockets with RFC 1001 ("Going Away").
+- **Fatal Process Error Traps (`src/index.ts`)**: Process-level handlers for `uncaughtException` and `unhandledRejection` logging structured JSON error diagnostics, executing emergency resource cleanup (max 3s), and exiting non-zero (`process.exit(1)`).
+- **Production Configuration Fail-Safe (`src/config/index.ts`)**: Strictly rejects default `AUTH_SECRET` values in `NODE_ENV=production` and enforces a minimum 32-character key length.
+- **HTTP Security Headers (`src/core/PulseServer.ts`)**: Injects `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` on all HTTP endpoints.
+- **Prometheus Telemetry Instrumentation (`src/metrics/telemetry.ts`)**: Added `pulse_connections_rejected_total{reason}` and `pulse_rate_limit_exceeded_total{direction}` counters under low-cardinality label invariants.
+- **Dedicated Long-Running Soak Test (`tests/soak/SustainedStability.soak.test.ts`)**: Endurance soak runner under `npm run test:soak` using explicit garbage collection (`--expose-gc`) to enforce `< 15%` post-GC heap growth after sustained connection and message churn.
+
 ## [0.2.0] - 2026-09-08
 
 ### Added

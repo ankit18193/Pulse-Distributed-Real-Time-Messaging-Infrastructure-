@@ -1,6 +1,6 @@
 {
   "name": "pulse-realtime",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pulse — Distributed Real-Time Messaging Infrastructure (Phase 1 Single-Node Engine)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,6 +11,7 @@
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand --detectOpenHandles",
     "test:coverage": "jest --coverage --runInBand",
     "test:chaos": "jest --runInBand tests/chaos/",
+    "test:soak": "node --expose-gc --experimental-vm-modules ./node_modules/jest/bin/jest.js --config=jest.soak.config.js --runInBand --detectOpenHandles",
     "bench": "tsx bin/pulse-bench.ts",
     "chaos": "tsx bin/pulse-chaos.ts",
     "dev:dashboard": "npm run dev --prefix dashboard",
