@@ -1,0 +1,294 @@
+:root {
+  /* Surface Layers (Deep Obsidian Void) */
+  --pulse-bg-space: #07090E;         /* Global viewport canvas */
+  --pulse-bg-surface: #0E131F;       /* Primary panel / cockpit surface */
+  --pulse-bg-card: #141A29;          /* Modular telemetry card */
+  --pulse-bg-card-hover: #1D263B;    /* Interactive card hover */
+  --pulse-bg-sunken: #0A0D15;        /* Terminal logs / code viewports */
+
+  /* Borders & Grid Rules */
+  --pulse-border-subtle: rgba(255, 255, 255, 0.08);
+  --pulse-border-medium: rgba(255, 255, 255, 0.15);
+  --pulse-border-accent: rgba(6, 182, 212, 0.4);
+
+  /* Typography & Text */
+  --pulse-text-primary: #F3F4F6;     /* 95% White - Headlines, critical metrics */
+  --pulse-text-secondary: #9CA3AF;   /* 60% Gray - Field labels, table headers */
+  --pulse-text-muted: #6B7280;       /* 40% Gray - Timestamps, helper notes */
+  --pulse-text-inverse: #07090E;     /* Text on bright badge chips */
+
+  /* Telemetry & Brand Accents */
+  --pulse-accent-cyan: #06B6D4;      /* Ingress traffic / Primary brand / Inbound frames */
+  --pulse-accent-emerald: #10B981;   /* Healthy status / Broadcast egress / Redis connected */
+  --pulse-accent-amber: #F59E0B;     /* Degraded cluster / Event-loop lag warning (>20ms) */
+  --pulse-accent-crimson: #EF4444;   /* Node offline / Auth rejected / Connection error */
+  --pulse-accent-violet: #8B5CF6;    /* RouteX Edge Gateway / Proxied routes */
+
+  /* Glow Filters */
+  --pulse-glow-cyan: 0 0 12px rgba(6, 182, 212, 0.35);
+  --pulse-glow-emerald: 0 0 12px rgba(16, 185, 129, 0.35);
+  --pulse-glow-amber: 0 0 12px rgba(245, 158, 11, 0.35);
+  --pulse-glow-crimson: 0 0 12px rgba(239, 68, 68, 0.35);
+
+  /* Fonts */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background-color: var(--pulse-bg-space);
+  color: var(--pulse-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Monospace tabular numerals for jitter-free counters */
+.tabular-nums {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--pulse-bg-space);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Pulse Beacons */
+@keyframes pulse-glow-green {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+  70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+@keyframes pulse-glow-amber {
+  0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.6); }
+  70% { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+
+@keyframes pulse-glow-red {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
+  70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.beacon-healthy {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--pulse-accent-emerald);
+  animation: pulse-glow-green 2s infinite;
+}
+
+.beacon-degraded {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--pulse-accent-amber);
+  animation: pulse-glow-amber 1.5s infinite;
+}
+
+.beacon-offline {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--pulse-accent-crimson);
+  animation: pulse-glow-red 1s infinite;
+}
+
+/* Common Card Style */
+.telemetry-card {
+  background: var(--pulse-bg-card);
+  border: 1px solid var(--pulse-border-subtle);
+  border-radius: 8px;
+  padding: 16px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.telemetry-card:hover {
+  border-color: var(--pulse-border-medium);
+}
+
+/* Glow Borders */
+.glow-cyan {
+  border-color: var(--pulse-accent-cyan) !important;
+  box-shadow: var(--pulse-glow-cyan);
+}
+
+.glow-emerald {
+  border-color: var(--pulse-accent-emerald) !important;
+  box-shadow: var(--pulse-glow-emerald);
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.badge-cyan {
+  background: rgba(6, 182, 212, 0.12);
+  color: var(--pulse-accent-cyan);
+  border: 1px solid rgba(6, 182, 212, 0.25);
+}
+
+.badge-emerald {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--pulse-accent-emerald);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.badge-amber {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--pulse-accent-amber);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.badge-crimson {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--pulse-accent-crimson);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.badge-violet {
+  background: rgba(139, 92, 246, 0.12);
+  color: var(--pulse-accent-violet);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+}
+
+.badge-muted {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--pulse-text-secondary);
+  border: 1px solid var(--pulse-border-subtle);
+}
+
+/* Interactive Buttons */
+button {
+  font-family: var(--font-sans);
+  cursor: pointer;
+  border: none;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--pulse-accent-cyan);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  background: var(--pulse-accent-cyan);
+  color: var(--pulse-text-inverse);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #22d3ee;
+  box-shadow: var(--pulse-glow-cyan);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--pulse-text-primary);
+  border: 1px solid var(--pulse-border-subtle);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--pulse-border-medium);
+}
+
+.btn-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--pulse-accent-crimson);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.25);
+  box-shadow: var(--pulse-glow-crimson);
+}
+
+/* Inputs & Form Controls */
+input, select, textarea {
+  background: var(--pulse-bg-sunken);
+  border: 1px solid var(--pulse-border-subtle);
+  border-radius: 6px;
+  color: var(--pulse-text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 8px 12px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--pulse-accent-cyan);
+  box-shadow: 0 0 0 1px var(--pulse-accent-cyan);
+}
+
+input::placeholder, textarea::placeholder {
+  color: var(--pulse-text-muted);
+}

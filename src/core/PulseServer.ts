@@ -1,4 +1,6 @@
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { PulseConfig, PulseEventEnvelope } from '../types/index.js';
 import { Authenticator, AuthResult } from '../auth/Authenticator.js';
@@ -461,6 +463,228 @@ export class PulseServer {
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     const rawUrl = req.url || '';
     const pathname = rawUrl.split('?')[0];
+
+    // Standard CORS headers for frontend and local dev tooling
+    const origin = (req.headers.origin as string) || '*';
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (req.method === 'GET' && (pathname === '/api/stats' || pathname === '/api/telemetry')) {
+      this.updateEventLoopMetrics();
+
+      const isRedisDegraded = Boolean(
+        this.redisPubSubManager && !this.redisPubSubManager.isConnected()
+      );
+
+      let status: 'DRAINING' | 'DEGRADED' | 'OK' = 'OK';
+      let statusCode = 200;
+
+      if (this.isShuttingDown) {
+        status = 'DRAINING';
+        statusCode = 503;
+      } else if (isRedisDegraded) {
+        status = 'DEGRADED';
+        statusCode = 200;
+      }
+
+      // Aggregate throughput counters
+      let totalMessagesReceived = 0;
+      const rxCounter = this.metricsRegistry.getCounter('pulse_messages_received_total');
+      if (rxCounter) {
+        for (const sample of rxCounter.collect()) {
+          totalMessagesReceived += sample.value;
+        }
+      }
+
+      let totalMessagesDelivered = 0;
+      const txCounter = this.metricsRegistry.getCounter('pulse_messages_delivered_total');
+      if (txCounter) {
+        for (const sample of txCounter.collect()) {
+          totalMessagesDelivered += sample.value;
+        }
+      }
+
+      let totalConnectionsAttempted = 0;
+      const connCounter = this.metricsRegistry.getCounter('pulse_connections_total');
+      if (connCounter) {
+        for (const sample of connCounter.collect()) {
+          totalConnectionsAttempted += sample.value;
+        }
+      }
+
+      const eventLoopMetrics = this.eventLoopMonitor?.isActive()
+        ? this.eventLoopMonitor.getMetrics()
+        : {
+            meanSec: this.gaugeEventLoopMean?.get() ?? 0,
+            p50Sec: this.gaugeEventLoopP50?.get() ?? 0,
+            p99Sec: this.gaugeEventLoopP99?.get() ?? 0,
+            maxSec: this.gaugeEventLoopMax?.get() ?? 0
+          };
+
+      const roomsList = this.roomManager.getAllRoomIds().slice(0, 50).map((roomId) => ({
+        roomId,
+        subscriberCount: this.roomManager.getConnectionCountInRoom(roomId)
+      }));
+
+      const activeConnectionsSample = this.connectionManager.getAllConnections().slice(0, 50).map((c) => ({
+        connectionId: c.connectionId,
+        userId: c.userId,
+        remoteAddress: c.remoteAddress,
+        roles: c.roles,
+        connectedAt: c.connectedAt,
+        bufferedAmountBytes: c.getBufferedAmount(),
+        rooms: c.getRooms()
+      }));
+
+      const statsData = {
+        status,
+        statusCode,
+        instanceId: this.config.instanceId,
+        nodeEnv: this.config.nodeEnv,
+        uptimeSeconds: Math.floor(process.uptime()),
+        timestamp: Date.now(),
+        connections: {
+          active: this.connectionManager.getCount(),
+          total: totalConnectionsAttempted,
+          sample: activeConnectionsSample
+        },
+        rooms: {
+          active: this.roomManager.getRoomCount(),
+          list: roomsList
+        },
+        throughput: {
+          messagesReceived: totalMessagesReceived,
+          messagesDelivered: totalMessagesDelivered
+        },
+        eventLoopLag: {
+          meanMs: Number((eventLoopMetrics.meanSec * 1000).toFixed(2)),
+          p50Ms: Number((eventLoopMetrics.p50Sec * 1000).toFixed(2)),
+          p99Ms: Number((eventLoopMetrics.p99Sec * 1000).toFixed(2)),
+          maxMs: Number((eventLoopMetrics.maxSec * 1000).toFixed(2))
+        },
+        idempotencyCacheSize: this.idempotencyManager.size(),
+        redis: this.redisPubSubManager
+          ? {
+              enabled: true,
+              ...this.redisPubSubManager.getStatus(),
+              metrics: this.redisPubSubManager.getMetricsSnapshot()
+            }
+          : { enabled: false },
+        presence: this.presenceManager
+          ? {
+              enabled: true,
+              mode: isRedisDegraded ? 'degraded-local-only' : 'distributed',
+              metrics: this.presenceManager.getMetricsSnapshot()
+            }
+          : { enabled: false, mode: 'disabled' },
+        routex: this.routexGateway
+          ? {
+              enabled: true,
+              version: '1.2.0'
+            }
+          : { enabled: false }
+      };
+
+      res.writeHead(statusCode, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
+      });
+      res.end(JSON.stringify(statsData));
+      return;
+    }
+
+    if (pathname === '/dashboard') {
+      res.writeHead(301, { Location: '/dashboard/' });
+      res.end();
+      return;
+    }
+
+    if (pathname.startsWith('/dashboard/')) {
+      const dashboardDistPath = path.resolve(process.cwd(), 'dashboard', 'dist');
+      if (!fs.existsSync(dashboardDistPath)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'Dashboard build not found',
+          message: 'Run npm run build:dashboard to compile dashboard static assets or run npm run dev:dashboard for development.'
+        }));
+        return;
+      }
+
+      let relativeFile = pathname.replace(/^\/dashboard\/?/, '');
+      try {
+        relativeFile = decodeURIComponent(relativeFile);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Bad Request');
+        return;
+      }
+
+      if (relativeFile.includes('\0') || relativeFile.includes('..')) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Forbidden');
+        return;
+      }
+
+      if (!relativeFile || relativeFile === '') {
+        relativeFile = 'index.html';
+      }
+
+      const filePath = path.resolve(dashboardDistPath, relativeFile);
+      const normalizedDist = path.normalize(dashboardDistPath) + path.sep;
+      const normalizedFile = path.normalize(filePath);
+
+      if (normalizedFile !== path.normalize(dashboardDistPath) && !normalizedFile.startsWith(normalizedDist)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Forbidden');
+        return;
+      }
+
+      let finalPath = filePath;
+      if (!fs.existsSync(finalPath) || fs.statSync(finalPath).isDirectory()) {
+        if (path.extname(relativeFile) && path.extname(relativeFile) !== '.html') {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Not Found');
+          return;
+        }
+        finalPath = path.resolve(dashboardDistPath, 'index.html');
+      }
+
+      if (fs.existsSync(finalPath)) {
+        const ext = path.extname(finalPath).toLowerCase();
+        const mimeTypes: Record<string, string> = {
+          '.html': 'text/html; charset=utf-8',
+          '.js': 'application/javascript; charset=utf-8',
+          '.css': 'text/css; charset=utf-8',
+          '.svg': 'image/svg+xml',
+          '.png': 'image/png',
+          '.ico': 'image/x-icon',
+          '.json': 'application/json; charset=utf-8'
+        };
+        const contentType = mimeTypes[ext] || 'application/octet-stream';
+        res.writeHead(200, { 'Content-Type': contentType });
+        const stream = fs.createReadStream(finalPath);
+        stream.on('error', (err) => {
+          logger.error('Error streaming dashboard static asset', {
+            component: 'PulseServer',
+            file: finalPath,
+            error: err instanceof Error ? err.message : String(err)
+          });
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Internal Server Error');
+          }
+        });
+        stream.pipe(res);
+        return;
+      }
+    }
 
     if (pathname === '/healthz' || pathname === '/health') {
       const isRedisDegraded = Boolean(

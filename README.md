@@ -4,7 +4,7 @@ A production-oriented real-time messaging engine built with WebSockets, structur
 
 ---
 
-## Current Status: Phase 8 Complete (RouteX Edge Gateway Integration)
+## Current Status: Phase 9 Complete (Pulse Mission Control — Infrastructure Dashboard & Traffic Sandbox)
 
 | Phase | Milestone | Status | Description |
 | :--- | :--- | :--- | :--- |
@@ -15,9 +15,9 @@ A production-oriented real-time messaging engine built with WebSockets, structur
 | **Phase 4** | **Distributed Presence Engine** | ✅ Done | Ephemeral Redis ZSET connection leases, atomic Lua script state transitions (`ONLINE`/`OFFLINE`), multi-device session aggregation, periodic lease refresh loop, room-scoped rosters. |
 | **Phase 6** | **Observability & Benchmarking** | ✅ Done | Prometheus text exposition (`/metrics`), decoupled `/healthz` & `/readyz` probes, low-cardinality enforcement, event loop delay monitoring, nanosecond local timing, cross-node latency with clock skew clamping, and standalone 5-profile benchmark CLI (`pulse-bench.ts`). |
 | **Phase 7** | **Failure & Resilience Engineering** | ✅ Done | Out-of-band fault injection via FaultProxy, RFC 6455 frame filtering, 7 deterministic chaos drills, real Redis requirements, and pulse-chaos CLI harness. |
-| **Phase 8** | **RouteX Edge Gateway Integration** | ✅ Done | Edge RFC 6455 WebSocket proxying, pre-101 connect-time failover, trusted proxy boundary, and distributed multi-node failover via RouteX. |
-| **Phase 9** | **Demonstration Client Application** | ⏳ Planned | Minimal testing client showcasing room chat, direct messaging, and node metadata. |
-| **Phase 10** | **Infrastructure Control Center** | ⏳ Planned | Live dashboard displaying cluster health, throughput, latency, and kill switches. |
+| **Phase 8** | **RouteX Edge Gateway Integration** | ✅ Done | Edge RFC 6455 WebSocket proxying, pre-101 connect-time failover, trusted proxy boundary, and single-port embedded reverse proxying in `PulseServer`. |
+| **Phase 9** | **Pulse Mission Control** | ✅ Done | High-density real-time infrastructure dashboard & traffic sandbox (Vite + React 18 + TS), dual-mode serving, 60s SVG throughput waveform, event loop lag quantiles, 1-click 500 msg/s load generator, and wire frame inspector (`DESIGN.md`). |
+| **Phase 10** | **Cluster Chaos & Kill Switches** | ⏳ Planned | Interactive cluster node disconnects, network partition simulation, and circuit breakers. |
 | **Phase 11** | **End-to-End Hardening & CSO Audit** | ⏳ Planned | Comprehensive security audit, payload limits, penetration testing. |
 | **Phase 12** | **Release & Showcase Packaging** | ⏳ Planned | Architecture diagrams, benchmark reports, portfolio case study. |
 

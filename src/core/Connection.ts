@@ -170,4 +170,8 @@ export class Connection {
   public isAlive(): boolean {
     return !this.isCleanedUp && this.socket.readyState === WebSocket.OPEN;
   }
+
+  public getBufferedAmount(): number {
+    return this.socket?.bufferedAmount ?? 0;
+  }
 }

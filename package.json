@@ -12,7 +12,9 @@
     "test:coverage": "jest --coverage --runInBand",
     "test:chaos": "jest --runInBand tests/chaos/",
     "bench": "tsx bin/pulse-bench.ts",
-    "chaos": "tsx bin/pulse-chaos.ts"
+    "chaos": "tsx bin/pulse-chaos.ts",
+    "dev:dashboard": "npm run dev --prefix dashboard",
+    "build:dashboard": "npm run build --prefix dashboard"
   },
   "keywords": [
     "websocket",

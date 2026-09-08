@@ -1,0 +1,483 @@
+import React, { useState } from 'react';
+import { usePulseSocket } from '../hooks/usePulseSocket';
+import { WireFrame } from '../types/telemetry';
+import {
+  Terminal,
+  Zap,
+  Send,
+  PlusCircle,
+  MinusCircle,
+  Copy,
+  Check,
+  Trash2,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Radio,
+  Server
+} from 'lucide-react';
+
+interface FrameItemProps {
+  frame: WireFrame;
+}
+
+const FrameItem: React.FC<FrameItemProps> = ({ frame }) => {
+  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const copyPayload = () => {
+    navigator.clipboard.writeText(frame.raw);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  const isInbound = frame.direction === 'inbound';
+
+  return (
+    <div style={{
+      background: 'var(--pulse-bg-surface)',
+      border: '1px solid var(--pulse-border-subtle)',
+      borderRadius: '6px',
+      padding: '8px 10px',
+      marginBottom: '6px',
+      fontFamily: 'var(--font-mono)',
+      fontSize: '11px'
+    }}>
+      {/* Frame Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {isInbound ? (
+            <span className="badge badge-cyan" style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+              <ArrowDownLeft size={11} /> IN
+            </span>
+          ) : (
+            <span className="badge badge-emerald" style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+              <ArrowUpRight size={11} /> OUT
+            </span>
+          )}
+
+          <span className="badge badge-violet" style={{ fontSize: '10px' }}>
+            {frame.type}
+          </span>
+
+          {frame.room && (
+            <span className="badge badge-muted" style={{ fontSize: '10px' }}>
+              room:{frame.room}
+            </span>
+          )}
+
+          <span style={{ color: 'var(--pulse-text-muted)' }}>
+            {frame.timestamp}
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style={{ color: 'var(--pulse-text-muted)', fontSize: '10px' }}>
+            {frame.sizeBytes} B
+          </span>
+          <button
+            onClick={copyPayload}
+            title="Copy Raw Wire JSON"
+            className="btn-secondary"
+            style={{ padding: '2px 6px', fontSize: '10px' }}
+          >
+            {copied ? <Check size={11} color="var(--pulse-accent-emerald)" /> : <Copy size={11} />}
+          </button>
+          <button
+            onClick={() => setExpanded((p) => !p)}
+            className="btn-secondary"
+            style={{ padding: '2px 6px', fontSize: '10px' }}
+          >
+            {expanded ? 'Fold' : 'Inspect'}
+          </button>
+        </div>
+      </div>
+
+      {/* Frame Content */}
+      <div style={{ marginTop: '6px', color: 'var(--pulse-text-primary)', wordBreak: 'break-all' }}>
+        {expanded ? (
+          <pre style={{
+            background: 'var(--pulse-bg-sunken)',
+            padding: '6px 8px',
+            borderRadius: '4px',
+            overflowX: 'auto',
+            maxHeight: '150px',
+            color: 'var(--pulse-accent-cyan)'
+          }}>
+            {JSON.stringify(frame.payload, null, 2)}
+          </pre>
+        ) : (
+          <div style={{
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            color: 'var(--pulse-text-secondary)'
+          }}>
+            {frame.raw}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export const TrafficSandbox: React.FC = () => {
+  const {
+    status,
+    frames,
+    subscribedRooms,
+    lastError,
+    connect,
+    disconnect,
+    sendRaw,
+    subscribe,
+    unsubscribe,
+    clearFrames,
+    triggerBurstLoad,
+    isBursting,
+    burstProgress
+  } = usePulseSocket();
+
+  // Dynamic default WS URL based on current host and backend port
+  const defaultWsUrl = typeof window !== 'undefined'
+    ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${window.location.port === '5173' ? '8085' : (window.location.port || '8085')}/ws`
+    : 'ws://127.0.0.1:8085/ws';
+  const [serverUrl, setServerUrl] = useState(defaultWsUrl);
+  const [roomInput, setRoomInput] = useState('lobby');
+  const [msgPayload, setMsgPayload] = useState('{"message": "Hello from Mission Control"}');
+  const [directionFilter, setDirectionFilter] = useState<'all' | 'inbound' | 'outbound'>('all');
+
+  const isConnected = status === 'connected';
+
+  const handleConnectToggle = () => {
+    if (isConnected || status === 'connecting') {
+      disconnect();
+    } else {
+      connect(serverUrl);
+    }
+  };
+
+  const handleBroadcast = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isConnected) return;
+
+    try {
+      const parsed = JSON.parse(msgPayload);
+      sendRaw({
+        type: 'BROADCAST',
+        room: roomInput,
+        data: parsed,
+        ts: Date.now()
+      });
+    } catch {
+      sendRaw({
+        type: 'BROADCAST',
+        room: roomInput,
+        message: msgPayload,
+        ts: Date.now()
+      });
+    }
+  };
+
+  const filteredFrames = frames.filter((f) => {
+    if (directionFilter === 'all') return true;
+    return f.direction === directionFilter;
+  });
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(340px, 420px) 1fr', gap: '16px', height: '100%' }}>
+      {/* Left Column: Interactive Dispatch & Load Controls */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        {/* Connection Setup Card */}
+        <div className="telemetry-card">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Server size={16} color="var(--pulse-accent-cyan)" />
+              <span style={{ fontSize: '12px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--pulse-text-primary)' }}>
+                Target WebSocket Host
+              </span>
+            </div>
+            <span className={`badge ${
+              isConnected ? 'badge-emerald' : status === 'connecting' ? 'badge-amber' : 'badge-crimson'
+            }`}>
+              {isConnected ? '[● CONNECTED]' : status === 'connecting' ? '[▲ CONNECTING]' : '[✖ DISCONNECTED]'}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+            <input
+              type="text"
+              value={serverUrl}
+              onChange={(e) => setServerUrl(e.target.value)}
+              disabled={isConnected}
+              style={{ flex: 1, fontSize: '12px' }}
+              placeholder="ws://127.0.0.1:8085/ws"
+            />
+            <button
+              onClick={handleConnectToggle}
+              className={isConnected ? 'btn-danger' : 'btn-primary'}
+              style={{ fontSize: '12px', padding: '6px 12px' }}
+            >
+              {isConnected ? 'Disconnect' : status === 'connecting' ? 'Connecting...' : 'Connect'}
+            </button>
+          </div>
+
+          {lastError && (
+            <div style={{
+              fontSize: '11px',
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--pulse-accent-crimson)',
+              background: 'rgba(239, 68, 68, 0.1)',
+              padding: '6px 8px',
+              borderRadius: '4px',
+              border: '1px solid rgba(239, 68, 68, 0.25)'
+            }}>
+              {lastError}
+            </div>
+          )}
+        </div>
+
+        {/* Room Subscription Manager */}
+        <div className="telemetry-card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+            <Radio size={16} color="var(--pulse-accent-violet)" />
+            <span style={{ fontSize: '12px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--pulse-text-primary)' }}>
+              Room Subscriptions
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+            <input
+              type="text"
+              value={roomInput}
+              onChange={(e) => setRoomInput(e.target.value)}
+              placeholder="Room ID (e.g. lobby, alerts)"
+              style={{ flex: 1, fontSize: '12px' }}
+            />
+            <button
+              onClick={() => subscribe(roomInput)}
+              disabled={!isConnected || !roomInput}
+              className="btn-primary"
+              style={{ fontSize: '12px', padding: '6px 10px' }}
+              title="Subscribe to room"
+            >
+              <PlusCircle size={14} /> Join
+            </button>
+            <button
+              onClick={() => unsubscribe(roomInput)}
+              disabled={!isConnected || !roomInput}
+              className="btn-secondary"
+              style={{ fontSize: '12px', padding: '6px 10px' }}
+              title="Unsubscribe from room"
+            >
+              <MinusCircle size={14} /> Leave
+            </button>
+          </div>
+
+          <div>
+            <span style={{ fontSize: '11px', color: 'var(--pulse-text-muted)' }}>Active in: </span>
+            {subscribedRooms.length === 0 ? (
+              <span style={{ fontSize: '11px', color: 'var(--pulse-text-muted)', fontStyle: 'italic' }}>none</span>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
+                {subscribedRooms.map((r) => (
+                  <span key={r} className="badge badge-violet" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                    #{r}
+                    <button
+                      onClick={() => unsubscribe(r)}
+                      style={{ background: 'transparent', color: 'inherit', padding: 0 }}
+                      title="Leave room"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Message Broadcast Form */}
+        <div className="telemetry-card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+            <Send size={16} color="var(--pulse-accent-cyan)" />
+            <span style={{ fontSize: '12px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--pulse-text-primary)' }}>
+              Dispatch Custom Frame
+            </span>
+          </div>
+
+          <form onSubmit={handleBroadcast}>
+            <textarea
+              rows={3}
+              value={msgPayload}
+              onChange={(e) => setMsgPayload(e.target.value)}
+              placeholder="JSON or text payload"
+              style={{ width: '100%', resize: 'vertical', fontSize: '11px', marginBottom: '10px' }}
+            />
+            <button
+              type="submit"
+              disabled={!isConnected}
+              className="btn-primary"
+              style={{ width: '100%', justifyContent: 'center' }}
+            >
+              <Send size={14} /> Broadcast to #{roomInput}
+            </button>
+          </form>
+        </div>
+
+        {/* 1-Click Load Generator Card */}
+        <div className="telemetry-card" style={{
+          border: '1px solid rgba(245, 158, 11, 0.4)',
+          background: 'rgba(245, 158, 11, 0.04)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Zap size={16} color="var(--pulse-accent-amber)" />
+              <span style={{ fontSize: '12px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--pulse-accent-amber)' }}>
+                1-Click Traffic Generator
+              </span>
+            </div>
+            <span className="badge badge-amber">[BURST TEST]</span>
+          </div>
+
+          <p style={{ fontSize: '11px', color: 'var(--pulse-text-secondary)', marginBottom: '10px' }}>
+            Emits 500 wire frames at high frequency to verify cluster throughput, latency curves, and backpressure stability.
+          </p>
+
+          <button
+            onClick={() => triggerBurstLoad(roomInput, 500)}
+            disabled={!isConnected || isBursting}
+            className="btn-primary"
+            style={{
+              width: '100%',
+              justifyContent: 'center',
+              background: 'var(--pulse-accent-amber)',
+              color: '#07090E'
+            }}
+          >
+            <Zap size={14} />
+            {isBursting ? 'Emitting Burst (500 frames)...' : 'Trigger 500 msg/s Load Burst'}
+          </button>
+
+          {isBursting && burstProgress && (
+            <div style={{ marginTop: '10px' }}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: '10px',
+                fontFamily: 'var(--font-mono)',
+                color: 'var(--pulse-text-muted)',
+                marginBottom: '4px'
+              }}>
+                <span>Burst Cadence</span>
+                <span>{burstProgress.sent} / {burstProgress.total} ({Math.round((burstProgress.sent / burstProgress.total) * 100)}%)</span>
+              </div>
+              <div style={{
+                height: '4px',
+                width: '100%',
+                background: 'rgba(255, 255, 255, 0.1)',
+                borderRadius: '2px',
+                overflow: 'hidden'
+              }}>
+                <div style={{
+                  height: '100%',
+                  width: `${(burstProgress.sent / burstProgress.total) * 100}%`,
+                  background: 'var(--pulse-accent-amber)',
+                  transition: 'width 0.1s linear'
+                }} />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Right Column: Wire Frame Inspector */}
+      <div className="telemetry-card" style={{ display: 'flex', flexDirection: 'column', height: '620px' }}>
+        {/* Inspector Header */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: '10px',
+          paddingBottom: '8px',
+          borderBottom: '1px solid var(--pulse-border-subtle)',
+          flexWrap: 'wrap',
+          gap: '8px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Terminal size={16} color="var(--pulse-accent-cyan)" />
+            <span style={{ fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--pulse-text-primary)' }}>
+              Raw Wire Frame Inspector
+            </span>
+            <span className="badge badge-muted">
+              Ring Buffer: {frames.length}/100
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {/* Direction Filter */}
+            <div style={{ display: 'flex', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--pulse-border-subtle)' }}>
+              {(['all', 'inbound', 'outbound'] as const).map((dir) => (
+                <button
+                  key={dir}
+                  onClick={() => setDirectionFilter(dir)}
+                  style={{
+                    padding: '3px 8px',
+                    fontSize: '11px',
+                    fontFamily: 'var(--font-mono)',
+                    textTransform: 'uppercase',
+                    background: directionFilter === dir ? 'var(--pulse-bg-card-hover)' : 'var(--pulse-bg-sunken)',
+                    color: directionFilter === dir ? 'var(--pulse-accent-cyan)' : 'var(--pulse-text-secondary)',
+                    border: 'none',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {dir}
+                </button>
+              ))}
+            </div>
+
+            {/* Clear Frames */}
+            <button
+              onClick={clearFrames}
+              className="btn-secondary"
+              style={{ padding: '4px 8px', fontSize: '11px' }}
+              title="Clear captured wire frames"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        </div>
+
+        {/* Frame List Viewport */}
+        <div style={{
+          flex: 1,
+          overflowY: 'auto',
+          background: 'var(--pulse-bg-sunken)',
+          padding: '8px',
+          borderRadius: '6px',
+          border: '1px solid var(--pulse-border-subtle)'
+        }}>
+          {filteredFrames.length === 0 ? (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
+              color: 'var(--pulse-text-muted)',
+              fontSize: '12px',
+              gap: '6px'
+            }}>
+              <Terminal size={24} color="var(--pulse-text-muted)" />
+              <span>No wire frames captured yet. Connect and send traffic to inspect.</span>
+            </div>
+          ) : (
+            filteredFrames.map((frame) => (
+              <FrameItem key={frame.id} frame={frame} />
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};

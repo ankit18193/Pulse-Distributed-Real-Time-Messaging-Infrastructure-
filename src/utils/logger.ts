@@ -43,7 +43,35 @@ export class Logger {
       ...context
     };
 
-    const output = JSON.stringify(logEntry);
+    const isPretty =
+      process.env.LOG_FORMAT === 'pretty' ||
+      (!process.env.LOG_FORMAT && process.env.NODE_ENV !== 'production' && !this.isTest);
+
+    let output: string;
+    if (isPretty) {
+      const time = new Date().toLocaleTimeString([], { hour12: false });
+      const colors: Record<LogLevel, string> = {
+        DEBUG: '\x1b[90m',
+        INFO: '\x1b[36m',
+        WARN: '\x1b[33m',
+        ERROR: '\x1b[31m'
+      };
+      const reset = '\x1b[0m';
+      const dim = '\x1b[90m';
+      const magenta = '\x1b[35m';
+      const levelTag = `${colors[level] || ''}[${level.padEnd(5)}]${reset}`;
+      const compTag = context.component ? `${magenta}[${context.component}]${reset} ` : '';
+
+      const detailKeys = Object.keys(context).filter((k) => k !== 'component' && k !== 'instanceId');
+      const detailsStr = detailKeys.length > 0
+        ? ` ${dim}(${detailKeys.map((k) => `${k}: ${typeof context[k] === 'string' ? context[k] : JSON.stringify(context[k])}`).join(', ')})${reset}`
+        : '';
+
+      output = `${dim}${time}${reset} ${levelTag} ${compTag}${message}${detailsStr}`;
+    } else {
+      output = JSON.stringify(logEntry);
+    }
+
     if (level === 'ERROR') {
       console.error(output);
     } else if (level === 'WARN') {
