@@ -15,6 +15,7 @@ import { ChannelRegistry } from '../redis/ChannelRegistry.js';
 import { PresenceManager } from '../redis/PresenceManager.js';
 import { PulseMetricsRegistry, PrometheusSerializer, EventLoopMonitor, Gauge, registerWebSocketMetrics } from '../metrics/index.js';
 import { generateUUIDv7 } from '../utils/uuidv7.js';
+import { OriginMatcher } from '../utils/OriginMatcher.js';
 import { logger } from '../utils/logger.js';
 import type { RouteXGatewayServer } from '@ankit18193/routex-gateway';
 
@@ -168,6 +169,7 @@ export class PulseServer {
     }
 
     this.connectionManager = new ConnectionManager(this.channelRegistry, this.metricsRegistry);
+    this.connectionManager.setMaxConnections(this.config.maxConnections ?? 50000);
     this.roomManager = new RoomManager(this.channelRegistry, this.metricsRegistry);
     this.idempotencyManager = new IdempotencyManager({
       capacity: config.idempotencyCapacity,
@@ -181,7 +183,9 @@ export class PulseServer {
       redisPubSubManager: this.redisPubSubManager,
       presenceManager: this.presenceManager,
       metricsRegistry: this.metricsRegistry,
-      instanceId: config.instanceId
+      instanceId: config.instanceId,
+      maxRoomsPerConnection: config.maxRoomsPerConnection,
+      maxRoomIdLength: config.maxRoomIdLength
     });
 
     this.heartbeatManager = new HeartbeatManager({
@@ -359,7 +363,17 @@ export class PulseServer {
 
           this.httpServer.on('upgrade', async (req: http.IncomingMessage, socket, head) => {
             if (this.isShuttingDown) {
+              this.metricsRegistry.getCounter('pulse_connections_rejected_total')?.inc({ reason: 'draining' });
               socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+              return;
+            }
+
+            // Phase 10: Cross-Site WebSocket Hijacking (CSWSH) Origin Defense
+            const originHeader = req.headers.origin as string | undefined;
+            const allowedOrigins = this.config.allowedOrigins ?? ['*'];
+            if (!OriginMatcher.isAllowed(originHeader, allowedOrigins)) {
+              this.metricsRegistry.getCounter('pulse_connections_rejected_total')?.inc({ reason: 'origin_forbidden' });
+              socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
               return;
             }
 
@@ -382,9 +396,25 @@ export class PulseServer {
               }
             }
 
+            // Phase 10: Atomic Admission Control (Race Condition Free)
+            if (!this.connectionManager.tryAcquireSlot()) {
+              this.metricsRegistry.getCounter('pulse_connections_rejected_total')?.inc({ reason: 'max_connections' });
+              const body = JSON.stringify({ error: 'Max connections reached' });
+              socket.end(
+                'HTTP/1.1 503 Service Unavailable\r\n' +
+                  'Content-Type: application/json\r\n' +
+                  `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+                  'Connection: close\r\n\r\n' +
+                  body
+              );
+              return;
+            }
+
             const authResult = this.authenticator.authenticateRequest(req);
             if (!authResult.authenticated) {
+              this.connectionManager.releasePendingSlot();
               this.metricsRegistry.getCounter('pulse_connections_total')?.inc({ status: 'rejected' });
+              this.metricsRegistry.getCounter('pulse_connections_rejected_total')?.inc({ reason: 'auth_failed' });
               const body = JSON.stringify({ error: authResult.error || 'Unauthorized' });
               socket.end(
                 'HTTP/1.1 401 Unauthorized\r\n' +
@@ -396,9 +426,22 @@ export class PulseServer {
               return;
             }
 
+            let slotClaimed = true;
+            const onEarlyClose = () => {
+              if (slotClaimed) {
+                slotClaimed = false;
+                this.connectionManager.releasePendingSlot();
+              }
+            };
+            socket.once('close', onEarlyClose);
+            socket.once('error', onEarlyClose);
+
             this.metricsRegistry.getCounter('pulse_connections_total')?.inc({ status: 'success' });
 
             this.wss!.handleUpgrade(req, socket, head, (ws) => {
+              slotClaimed = false;
+              socket.removeListener('close', onEarlyClose);
+              socket.removeListener('error', onEarlyClose);
               this.handleAuthenticatedConnection(ws, req, authResult);
             });
           });
@@ -469,6 +512,10 @@ export class PulseServer {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+
+    // HTTP Security Headers
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -841,7 +888,9 @@ export class PulseServer {
       roles,
       remoteAddress,
       maxBufferedAmountBytes: this.config.maxBufferedAmountBytes,
-      metricsRegistry: this.metricsRegistry
+      metricsRegistry: this.metricsRegistry,
+      inboundRateLimitMax: this.config.inboundRateLimitMax,
+      inboundRateLimitBurst: this.config.inboundRateLimitBurst
     });
 
     this.connectionManager.addConnection(connection);
@@ -962,17 +1011,19 @@ export class PulseServer {
     });
   }
 
-  public drain(): void {
+  public drain(drainTimeoutMs?: number): void {
     if (this.isShuttingDown) {
       return;
     }
 
     this.isShuttingDown = true;
+    const timeout = drainTimeoutMs ?? this.config.drainTimeoutMs ?? 2000;
 
     logger.info('Initiating graceful draining for PulseServer...', {
       component: 'PulseServer',
       event: 'DRAINING_INITIATED',
-      activeConnections: this.connectionManager.getCount()
+      activeConnections: this.connectionManager.getCount(),
+      drainTimeoutMs: timeout
     });
 
     // Notify all connected clients with SYS_SHUTDOWN frame
@@ -983,7 +1034,8 @@ export class PulseServer {
       senderId: 'system',
       payload: {
         reason: 'Server shutting down gracefully',
-        instanceId: this.config.instanceId
+        instanceId: this.config.instanceId,
+        drainTimeoutMs: timeout
       }
     };
 
@@ -998,10 +1050,11 @@ export class PulseServer {
       return;
     }
 
+    const gracePeriodMs = options.gracePeriodMs ?? this.config.drainTimeoutMs ?? 2000;
+
     if (!this.isShuttingDown) {
-      this.drain();
+      this.drain(gracePeriodMs);
     }
-    const gracePeriodMs = options.gracePeriodMs ?? 2000;
 
     logger.info('Initiating graceful shutdown for PulseServer...', {
       component: 'PulseServer',
@@ -1013,13 +1066,27 @@ export class PulseServer {
     // 1. Stop heartbeat manager sweeps
     this.heartbeatManager.stop();
 
+    // 2. Allow staged handoff window for sockets to self-disconnect gracefully
+    await new Promise<void>((resolve) => {
+      const startTime = Date.now();
+      const checkInterval = setInterval(() => {
+        if (this.connectionManager.getCount() === 0 || (Date.now() - startTime) >= gracePeriodMs) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 50);
+      if (typeof (checkInterval as any).unref === 'function') {
+        (checkInterval as any).unref();
+      }
+    });
+
+    // 3. Force-close any remaining active connections with RFC 6455 code 1001 (Going Away)
     const activeConnections = this.connectionManager.getAllConnections();
     for (const conn of activeConnections) {
-      // Close socket with RFC 6455 code 1001 (Going Away)
       conn.close(1001, 'Server shutting down');
     }
 
-    // 3. Close WebSocket server and HTTP server
+    // 4. Close WebSocket server and HTTP server
     return new Promise((resolve) => {
       const shutdownTimer = setTimeout(async () => {
         if (this.routexGateway) {

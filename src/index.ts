@@ -6,6 +6,8 @@ export * from './types/index.js';
 export * from './config/index.js';
 export * from './utils/logger.js';
 export * from './utils/uuidv7.js';
+export * from './utils/TokenBucket.js';
+export * from './utils/OriginMatcher.js';
 export * from './core/Connection.js';
 export * from './core/ConnectionManager.js';
 export * from './core/RoomManager.js';
@@ -53,8 +55,30 @@ async function bootstrap() {
     process.exit(0);
   };
 
+  const handleFatal = async (type: string, error: unknown) => {
+    logger.error(`Fatal ${type} encountered, executing emergency cleanup and terminating`, {
+      type,
+      error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error)
+    });
+    try {
+      const emergencyTimeout = setTimeout(() => {
+        process.exit(1);
+      }, 3000);
+      if (typeof emergencyTimeout.unref === 'function') {
+        emergencyTimeout.unref();
+      }
+      await server.stop({ gracePeriodMs: 1000 });
+    } catch {
+      // emergency exit
+    } finally {
+      process.exit(1);
+    }
+  };
+
   process.on('SIGINT', () => handleSignal('SIGINT'));
   process.on('SIGTERM', () => handleSignal('SIGTERM'));
+  process.on('uncaughtException', (err) => handleFatal('uncaughtException', err));
+  process.on('unhandledRejection', (reason) => handleFatal('unhandledRejection', reason));
 
   try {
     await server.start();
