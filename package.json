@@ -1,6 +1,6 @@
 {
   "name": "@ankit18193/pulse",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pulse — Distributed Real-Time Messaging Infrastructure Server",
   "type": "module",
   "main": "dist/index.js",

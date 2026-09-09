@@ -5,6 +5,23 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-09
+
+### Added
+- **Official NPM Server Package (`@ankit18193/pulse`)**: Packaged Pulse as a publish-ready pure ESM package with dual entrypoint support, TypeScript declarations (`.d.ts`), sourcemaps, and strict encapsulation.
+- **Conditional Subpath Exports Map**: Defined granular exports for `.` (core server), `./config` (configuration schemas), `./types` (protocol event envelopes), and `./metrics` (Prometheus metrics registry).
+- **Standalone CLI Runner (`dist/bin/pulse-server.js`)**: Executable binary mapped to `pulse-server` and `npx @ankit18193/pulse`, supporting `--help`, `--version`, signal traps (`SIGINT`/`SIGTERM`), and fatal error boundaries.
+- **Strict Public API Encapsulation**: Curated public API exporting `PulseServer`, `loadConfig`, `Authenticator`, `OriginMatcher`, `generateUUIDv7`, and `PulseMetricsRegistry`. Internal classes (`ConnectionManager`, `MessageDispatcher`, `PresenceManager`, `IdempotencyManager`, and Lua scripts) remain private.
+- **Flexible Options Constructor**: `new PulseServer(options?: PulseServerOptions)` supporting partial overrides with safe fallbacks and runtime validation.
+- **Reference Consumer Application (`examples/minimal-consumer/`)**: Runnable standalone consumer project demonstrating server startup, JWT authentication, room clustering, message broadcasting, and delivery acknowledgements.
+- **Package Integrity & Distribution Test Suite (`tests/package/`)**: Added automated tests verifying `npm pack` tarball contents, zero test/source leakage, and end-to-end consumer integration.
+- **Apache-2.0 License**: Added official open-source license file.
+- **13-Chapter Developer Manual (`README.md`)**: Comprehensive documentation covering quick start, CLI usage, configuration options, protocol specifications, presence tracking, and Prometheus metrics scraping.
+
+### Fixed
+- **HTTP Upgrade TCP Error Resilience (`ISSUE-001`)**: Bound error listener to upgrade socket immediately upon connection to cleanly absorb client TCP resets (`ECONNRESET`) during rejected handshakes without causing unhandled process exceptions.
+- **Graceful Redis Shutdown Flushes**: Made `cleanupAndFinalize()` in `PulseServer` asynchronous to ensure complete Redis pub/sub disconnections and channel registry teardown before server shutdown resolves.
+
 ## [0.3.0] - 2026-09-09
 
 ### Added

@@ -30,8 +30,8 @@ describe('External Consumer & Distribution Verification', () => {
 
       const pkg = packInfo[0];
       expect(pkg.name).toBe('@ankit18193/pulse');
-      expect(pkg.version).toBe('0.3.0');
-      expect(pkg.filename).toBe('ankit18193-pulse-0.3.0.tgz');
+      expect(pkg.version).toBe('0.4.0');
+      expect(pkg.filename).toBe('ankit18193-pulse-0.4.0.tgz');
 
       const files: string[] = pkg.files.map((f: { path: string }) => f.path);
 

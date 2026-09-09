@@ -43,7 +43,7 @@ Options:
 }
 
 if (args.includes('--version') || args.includes('-v')) {
-  console.log('0.3.0');
+  console.log('0.4.0');
   process.exit(0);
 }
 
