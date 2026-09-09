@@ -4,7 +4,10 @@ import { PulseConfig } from '../types/index.js';
 // Load .env if present
 dotenv.config();
 
-export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
+export type PulseServerOptions = Partial<PulseConfig>;
+export type { PulseConfig };
+
+export function loadConfig(overrides: PulseServerOptions = {}): PulseConfig {
   const port = overrides.port ?? parseInt(process.env.PORT || '8080', 10);
   const host = overrides.host ?? process.env.HOST ?? '0.0.0.0';
   const nodeEnv = (overrides.nodeEnv ?? process.env.NODE_ENV ?? 'development') as
@@ -105,6 +108,15 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     overrides.drainTimeoutMs ??
     parseInt(process.env.DRAIN_TIMEOUT_MS || '2000', 10);
 
+  const trustProxy =
+    overrides.trustProxy ??
+    (process.env.TRUST_PROXY !== undefined ? process.env.TRUST_PROXY === 'true' : false);
+  const trustedProxies =
+    overrides.trustedProxies ??
+    (process.env.TRUSTED_PROXIES
+      ? process.env.TRUSTED_PROXIES.split(',').map((s) => s.trim()).filter(Boolean)
+      : []);
+
   if (nodeEnv === 'production') {
     const knownDefaults = [
       'pulse-dev-secret-key-32chars-min',
@@ -118,7 +130,7 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     }
   }
 
-  if (isNaN(port) || port < 1 || port > 65535) {
+  if (isNaN(port) || port < 0 || port > 65535) {
     throw new Error(`Invalid PORT configuration: ${port}`);
   }
 
@@ -208,6 +220,8 @@ export function loadConfig(overrides: Partial<PulseConfig> = {}): PulseConfig {
     allowedOrigins,
     inboundRateLimitMax,
     inboundRateLimitBurst,
-    drainTimeoutMs
+    drainTimeoutMs,
+    trustProxy,
+    trustedProxies
   };
 }

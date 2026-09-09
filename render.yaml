@@ -1,0 +1,66 @@
+# ==============================================================================
+# Pulse Distributed Real-Time Messaging Infrastructure
+# Render Blueprint Specification (Infrastructure as Code)
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Distributed Redis Mesh (Key Value Store)
+  # Provides cross-node pub/sub message broadcast, presence leases, and clustering
+  # ----------------------------------------------------------------------------
+  - type: redis
+    name: pulse-redis
+    ipAllowList: [] # Internal private network access only
+    plan: starter
+    maxmemoryPolicy: noeviction
+
+  # ----------------------------------------------------------------------------
+  # 2. Pulse Backend Web Service (Node.js / TypeScript)
+  # Unified HTTP REST, Prometheus Metrics, Health Checks, and WebSocket Engine
+  # ----------------------------------------------------------------------------
+  - type: web
+    name: pulse-server
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build && npm run build:dashboard
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_ENABLED
+        value: "true"
+      - key: REDIS_URL
+        fromRedis:
+          name: pulse-redis
+          property: connectionString
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: DRAIN_TIMEOUT_MS
+        value: "15000"
+      - key: MAX_CONNECTIONS
+        value: "10000"
+      - key: INBOUND_RATE_LIMIT_MAX
+        value: "100"
+      - key: INBOUND_RATE_LIMIT_BURST
+        value: "50"
+
+  # ----------------------------------------------------------------------------
+  # 3. Mission Control Dashboard (Static Site)
+  # Standalone Vite SPA deployment with client-side routing
+  # (Also available embedded directly on the backend at /dashboard/)
+  # ----------------------------------------------------------------------------
+  - type: web
+    name: pulse-dashboard
+    env: static
+    rootDir: dashboard
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

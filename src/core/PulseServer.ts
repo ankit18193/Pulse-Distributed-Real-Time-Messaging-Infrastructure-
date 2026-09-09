@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { PulseConfig, PulseEventEnvelope } from '../types/index.js';
+import { loadConfig, PulseServerOptions } from '../config/index.js';
 import { Authenticator, AuthResult } from '../auth/Authenticator.js';
 import { Connection } from './Connection.js';
 import { ConnectionManager } from './ConnectionManager.js';
@@ -62,13 +63,13 @@ export class PulseServer {
   private isShuttingDown: boolean = false;
 
   constructor(
-    config: PulseConfig,
+    options: PulseServerOptions = {},
     hooks: PulseServerHooks = {},
     deps: PulseServerDependencies = {}
   ) {
-    this.config = config;
+    this.config = loadConfig(options);
     this.hooks = hooks;
-    this.authenticator = new Authenticator(config.authSecret);
+    this.authenticator = new Authenticator(this.config.authSecret);
     this.routexGateway = deps.routexGateway;
     this.metricsRegistry = deps.metricsRegistry ?? new PulseMetricsRegistry();
 
@@ -112,16 +113,16 @@ export class PulseServer {
 
     if (deps.redisPubSubManager) {
       this.redisPubSubManager = deps.redisPubSubManager;
-    } else if (config.redisEnabled) {
+    } else if (this.config.redisEnabled) {
       this.redisPubSubManager = new RedisPubSubManager({
-        url: config.redisUrl,
-        host: config.redisHost,
-        port: config.redisPort,
-        password: config.redisPassword,
-        retryMaxAttempts: config.redisRetryMaxAttempts,
-        retryInitialDelayMs: config.redisRetryInitialDelayMs,
-        retryMaxDelayMs: config.redisRetryMaxDelayMs
-      }, config.instanceId);
+        url: this.config.redisUrl,
+        host: this.config.redisHost,
+        port: this.config.redisPort,
+        password: this.config.redisPassword,
+        retryMaxAttempts: this.config.redisRetryMaxAttempts,
+        retryInitialDelayMs: this.config.redisRetryInitialDelayMs,
+        retryMaxDelayMs: this.config.redisRetryMaxDelayMs
+      }, this.config.instanceId);
     }
 
     if (deps.presenceManager) {
@@ -138,7 +139,7 @@ export class PulseServer {
         (this.redisPubSubManager as any).getMetrics()?.setMetricsRegistry?.(this.metricsRegistry);
       }
 
-      this.channelRegistry = new ChannelRegistry(this.redisPubSubManager, config.instanceId);
+      this.channelRegistry = new ChannelRegistry(this.redisPubSubManager, this.config.instanceId);
 
       if (typeof (this.redisPubSubManager as any).on === 'function') {
         (this.redisPubSubManager as any).on('connected', async () => {
@@ -147,7 +148,7 @@ export class PulseServer {
         (this.redisPubSubManager as any).on('error', (err: unknown) => {
           logger.warn('Redis connection reported error in PulseServer', {
             component: 'PulseServer',
-            instanceId: config.instanceId,
+            instanceId: this.config.instanceId,
             error: err instanceof Error ? err.message : String(err)
           });
         });
@@ -160,7 +161,7 @@ export class PulseServer {
           cm.on('error', (err: unknown) => {
             logger.warn('Redis connection manager reported error in PulseServer', {
               component: 'PulseServer',
-              instanceId: config.instanceId,
+              instanceId: this.config.instanceId,
               error: err instanceof Error ? err.message : String(err)
             });
           });
@@ -172,8 +173,8 @@ export class PulseServer {
     this.connectionManager.setMaxConnections(this.config.maxConnections ?? 50000);
     this.roomManager = new RoomManager(this.channelRegistry, this.metricsRegistry);
     this.idempotencyManager = new IdempotencyManager({
-      capacity: config.idempotencyCapacity,
-      ttlMs: config.idempotencyTtlMs
+      capacity: this.config.idempotencyCapacity,
+      ttlMs: this.config.idempotencyTtlMs
     });
 
     this.dispatcher = new MessageDispatcher({
@@ -183,15 +184,15 @@ export class PulseServer {
       redisPubSubManager: this.redisPubSubManager,
       presenceManager: this.presenceManager,
       metricsRegistry: this.metricsRegistry,
-      instanceId: config.instanceId,
-      maxRoomsPerConnection: config.maxRoomsPerConnection,
-      maxRoomIdLength: config.maxRoomIdLength
+      instanceId: this.config.instanceId,
+      maxRoomsPerConnection: this.config.maxRoomsPerConnection,
+      maxRoomIdLength: this.config.maxRoomIdLength
     });
 
     this.heartbeatManager = new HeartbeatManager({
       connectionManager: this.connectionManager,
-      intervalMs: config.heartbeatIntervalMs,
-      timeoutMs: config.heartbeatTimeoutMs
+      intervalMs: this.config.heartbeatIntervalMs,
+      timeoutMs: this.config.heartbeatTimeoutMs
     });
   }
 
@@ -248,6 +249,10 @@ export class PulseServer {
 
   public getAuthenticator(): Authenticator {
     return this.authenticator;
+  }
+
+  public getConfig(): Readonly<PulseConfig> {
+    return this.config;
   }
 
   public getActiveConnectionCount(): number {
@@ -362,6 +367,15 @@ export class PulseServer {
           });
 
           this.httpServer.on('upgrade', async (req: http.IncomingMessage, socket, head) => {
+            // Prevent uncaughtException from client TCP resets (ECONNRESET/EPIPE) during handshake
+            socket.on('error', (err: unknown) => {
+              logger.debug('Socket error during HTTP upgrade handshake', {
+                component: 'PulseServer',
+                event: 'UPGRADE_SOCKET_ERROR',
+                error: err instanceof Error ? err.message : String(err)
+              });
+            });
+
             if (this.isShuttingDown) {
               this.metricsRegistry.getCounter('pulse_connections_rejected_total')?.inc({ reason: 'draining' });
               socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
@@ -1096,7 +1110,7 @@ export class PulseServer {
             // best-effort
           }
         }
-        this.cleanupAndFinalize();
+        await this.cleanupAndFinalize();
         resolve();
       }, gracePeriodMs);
 
@@ -1112,7 +1126,7 @@ export class PulseServer {
                   // best-effort
                 }
               }
-              this.cleanupAndFinalize();
+              await this.cleanupAndFinalize();
               resolve();
             });
           } else {
@@ -1125,7 +1139,7 @@ export class PulseServer {
                   // best-effort
                 }
               }
-              this.cleanupAndFinalize();
+              await this.cleanupAndFinalize();
               resolve();
             })();
           }
@@ -1140,14 +1154,14 @@ export class PulseServer {
               // best-effort
             }
           }
-          this.cleanupAndFinalize();
+          await this.cleanupAndFinalize();
           resolve();
         })();
       }
     });
   }
 
-  private cleanupAndFinalize(): void {
+  private async cleanupAndFinalize(): Promise<void> {
     if (this.eventLoopTimer) {
       clearInterval(this.eventLoopTimer);
       this.eventLoopTimer = null;
@@ -1160,10 +1174,18 @@ export class PulseServer {
       this.presenceManager.stopRenewalLoop();
     }
     if (this.channelRegistry) {
-      this.channelRegistry.clear().catch(() => {});
+      try {
+        await this.channelRegistry.clear();
+      } catch {
+        // best-effort
+      }
     }
     if (this.redisPubSubManager) {
-      this.redisPubSubManager.disconnect().catch(() => {});
+      try {
+        await this.redisPubSubManager.disconnect();
+      } catch {
+        // best-effort
+      }
     }
     this.connectionManager.clear();
     this.roomManager.clear();

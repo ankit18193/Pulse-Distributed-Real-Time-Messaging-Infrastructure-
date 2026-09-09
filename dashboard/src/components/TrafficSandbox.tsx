@@ -138,9 +138,18 @@ export const TrafficSandbox: React.FC = () => {
   } = usePulseSocket();
 
   // Dynamic default WS URL based on current host and backend port
-  const defaultWsUrl = typeof window !== 'undefined'
-    ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${window.location.port === '5173' ? '8085' : (window.location.port || '8085')}/ws`
-    : 'ws://127.0.0.1:8085/ws';
+  const defaultWsUrl = (import.meta.env.VITE_WS_URL as string) || (typeof window !== 'undefined'
+    ? (() => {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const port = window.location.port;
+        const hostPort = port === '5173'
+          ? `${window.location.hostname}:8085`
+          : (port && port !== '80' && port !== '443')
+            ? `${window.location.hostname}:${port}`
+            : window.location.hostname;
+        return `${proto}//${hostPort}/ws`;
+      })()
+    : 'ws://127.0.0.1:8085/ws');
   const [serverUrl, setServerUrl] = useState(defaultWsUrl);
   const [authToken, setAuthToken] = useState('');
   const [roomInput, setRoomInput] = useState('lobby');

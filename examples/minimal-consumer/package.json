@@ -1,0 +1,15 @@
+{
+  "name": "pulse-minimal-consumer",
+  "version": "1.0.0",
+  "description": "Minimal reference consumer application for @ankit18193/pulse",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "client": "node client.js"
+  },
+  "dependencies": {
+    "@ankit18193/pulse": "../../",
+    "ws": "^8.18.0"
+  }
+}

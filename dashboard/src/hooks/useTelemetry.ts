@@ -21,7 +21,8 @@ export function useTelemetry(apiUrl: string = '') {
 
     const startTime = performance.now();
     try {
-      const endpoint = apiUrl ? `${apiUrl}/api/stats` : '/api/stats';
+      const baseApi = apiUrl || (import.meta.env.VITE_API_URL as string) || '';
+      const endpoint = baseApi ? `${baseApi.replace(/\/$/, '')}/api/stats` : '/api/stats';
       const res = await fetch(endpoint, {
         headers: { 'Accept': 'application/json' },
         cache: 'no-store'

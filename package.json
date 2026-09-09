@@ -1,17 +1,47 @@
 {
-  "name": "pulse-realtime",
-  "version": "0.3.0",
-  "description": "Pulse — Distributed Real-Time Messaging Infrastructure (Phase 1 Single-Node Engine)",
+  "name": "@ankit18193/pulse",
+  "version": "0.4.0",
+  "description": "Pulse — Distributed Real-Time Messaging Infrastructure Server",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "import": "./dist/config/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/types/index.js"
+    },
+    "./metrics": {
+      "types": "./dist/metrics/index.d.ts",
+      "import": "./dist/metrics/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "pulse-server": "dist/bin/pulse-server.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts",
+    "prepack": "npm run build",
+    "start": "node dist/bin/pulse-server.js",
+    "dev": "tsx watch src/bin/pulse-server.ts",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand --detectOpenHandles",
     "test:coverage": "jest --coverage --runInBand",
     "test:chaos": "jest --runInBand tests/chaos/",
     "test:soak": "node --expose-gc --experimental-vm-modules ./node_modules/jest/bin/jest.js --config=jest.soak.config.js --runInBand --detectOpenHandles",
+    "test:package": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js tests/package/ --runInBand --detectOpenHandles",
     "bench": "tsx bin/pulse-bench.ts",
     "chaos": "tsx bin/pulse-chaos.ts",
     "dev:dashboard": "npm run dev --prefix dashboard",
@@ -22,7 +52,10 @@
     "realtime",
     "messaging",
     "infrastructure",
-    "distributed-systems"
+    "distributed-systems",
+    "redis",
+    "pubsub",
+    "presence"
   ],
   "author": "Pulse Engineering",
   "license": "Apache-2.0",

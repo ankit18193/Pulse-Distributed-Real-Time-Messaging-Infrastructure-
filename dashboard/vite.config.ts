@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    base: '/dashboard/',
+    base: env.VITE_BASE_PATH || process.env.VITE_BASE_PATH || './',
     server: {
       port: 5173,
       proxy: {
