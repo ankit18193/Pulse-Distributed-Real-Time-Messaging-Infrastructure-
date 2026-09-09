@@ -12,7 +12,7 @@ export function useTelemetry(apiUrl: string = '') {
   const [lastError, setLastError] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number>(0);
 
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMountedRef = useRef<boolean>(true);
   const lastSampleRef = useRef<{ timestamp: number; rx: number; tx: number } | null>(null);
 
