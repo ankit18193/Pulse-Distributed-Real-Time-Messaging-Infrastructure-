@@ -11,7 +11,7 @@ services:
   - type: keyvalue
     name: pulse-redis
     ipAllowList: [] # Internal private network access only
-    plan: starter
+    plan: free
     maxmemoryPolicy: noeviction
 
   # ----------------------------------------------------------------------------
@@ -21,7 +21,7 @@ services:
   - type: web
     name: pulse-server
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm ci && npm run build && npm run build:dashboard
     startCommand: npm start
     healthCheckPath: /healthz
