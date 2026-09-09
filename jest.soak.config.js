@@ -1,7 +1,7 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} */
-const baseConfig = require('./jest.config.js');
+import baseConfig from './jest.config.js';
 
-module.exports = {
+export default {
   ...baseConfig,
   testMatch: ['**/tests/soak/**/*.soak.test.ts'],
   testPathIgnorePatterns: ['/node_modules/']

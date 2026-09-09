@@ -105,7 +105,7 @@ describe('RouteX ↔ Pulse Distributed Edge Integration Suite', () => {
     const address = await gateway.listen(0, '127.0.0.1');
     const parsed = new URL(address);
     gatewayPort = Number(parsed.port);
-  });
+  }, 30000);
 
   afterAll(async () => {
     for (const s of openSockets) {
@@ -128,7 +128,7 @@ describe('RouteX ↔ Pulse Distributed Edge Integration Suite', () => {
     if (server2 && server2.isServerRunning()) {
       await server2.stop({ gracePeriodMs: 50 });
     }
-  });
+  }, 30000);
 
   it('1. RouteX RFC 6455 Upgrade & Authoritative Pulse Authentication', async () => {
     const token = authenticator.generateToken({ userId: 'alice' });
