@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { usePulseSocket } from '../hooks/usePulseSocket';
 import { WireFrame } from '../types/telemetry';
 import {
@@ -13,7 +13,8 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   Radio,
-  Server
+  Server,
+  RefreshCw
 } from 'lucide-react';
 
 interface FrameItemProps {
@@ -120,6 +121,8 @@ const FrameItem: React.FC<FrameItemProps> = ({ frame }) => {
   );
 };
 
+const SANDBOX_SESSION_KEY = 'pulse_sandbox_session';
+
 export const TrafficSandbox: React.FC = () => {
   const {
     status,
@@ -155,11 +158,79 @@ export const TrafficSandbox: React.FC = () => {
   const [roomInput, setRoomInput] = useState('lobby');
   const [msgPayload, setMsgPayload] = useState('{"message": "Hello from Mission Control"}');
   const [directionFilter, setDirectionFilter] = useState<'all' | 'inbound' | 'outbound'>('all');
+  const [resumedNotice, setResumedNotice] = useState<string | null>(null);
 
   const isConnected = status === 'connected';
 
+  // State refs for unmount lifecycle persistence
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  const serverUrlRef = useRef(serverUrl);
+  serverUrlRef.current = serverUrl;
+  const authTokenRef = useRef(authToken);
+  authTokenRef.current = authToken;
+  const roomInputRef = useRef(roomInput);
+  roomInputRef.current = roomInput;
+
+  // On mount: check if returning from dashboard tab switch with active session
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem(SANDBOX_SESSION_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed.autoResume && parsed.serverUrl) {
+          if (parsed.serverUrl) setServerUrl(parsed.serverUrl);
+          if (parsed.authToken) setAuthToken(parsed.authToken);
+          if (parsed.roomInput) setRoomInput(parsed.roomInput);
+
+          let finalUrl = parsed.serverUrl;
+          if (parsed.authToken && parsed.authToken.trim() && !finalUrl.includes('token=')) {
+            finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(parsed.authToken.trim())}`;
+          }
+          connect(finalUrl);
+          setResumedNotice(`Resumed sandbox session for ${parsed.serverUrl}`);
+          const timer = setTimeout(() => setResumedNotice(null), 4000);
+          return () => clearTimeout(timer);
+        }
+      }
+    } catch {
+      // ignore storage parsing error
+    }
+  }, [connect]);
+
+  // On unmount: explicitly record session state if user was connected/connecting
+  useEffect(() => {
+    return () => {
+      if (
+        statusRef.current === 'connected' ||
+        statusRef.current === 'connecting' ||
+        statusRef.current === 'reconnecting'
+      ) {
+        try {
+          sessionStorage.setItem(
+            SANDBOX_SESSION_KEY,
+            JSON.stringify({
+              autoResume: true,
+              serverUrl: serverUrlRef.current,
+              authToken: authTokenRef.current,
+              roomInput: roomInputRef.current
+            })
+          );
+        } catch {
+          // ignore storage error
+        }
+      }
+    };
+  }, []);
+
   const handleConnectToggle = () => {
-    if (isConnected || status === 'connecting') {
+    if (isConnected || status === 'connecting' || status === 'reconnecting') {
+      try {
+        sessionStorage.removeItem(SANDBOX_SESSION_KEY);
+      } catch {
+        // ignore storage error
+      }
+      setResumedNotice(null);
       disconnect();
     } else {
       let finalUrl = serverUrl;
@@ -211,27 +282,62 @@ export const TrafficSandbox: React.FC = () => {
               </span>
             </div>
             <span className={`badge ${
-              isConnected ? 'badge-emerald' : status === 'connecting' ? 'badge-amber' : 'badge-crimson'
+              isConnected
+                ? 'badge-emerald'
+                : status === 'connecting' || status === 'reconnecting'
+                ? 'badge-amber'
+                : 'badge-crimson'
             }`}>
-              {isConnected ? '[● CONNECTED]' : status === 'connecting' ? '[▲ CONNECTING]' : '[✖ DISCONNECTED]'}
+              {isConnected
+                ? '[● CONNECTED]'
+                : status === 'connecting'
+                ? '[▲ CONNECTING]'
+                : status === 'reconnecting'
+                ? '[↻ RECONNECTING]'
+                : '[✖ DISCONNECTED]'}
             </span>
           </div>
+
+          {resumedNotice && (
+            <div style={{
+              fontSize: '11px',
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--pulse-accent-cyan)',
+              background: 'rgba(6, 182, 212, 0.1)',
+              padding: '6px 8px',
+              borderRadius: '4px',
+              border: '1px solid rgba(6, 182, 212, 0.25)',
+              marginBottom: '10px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <RefreshCw size={12} className="spin" />
+              <span>{resumedNotice}</span>
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
             <input
               type="text"
               value={serverUrl}
               onChange={(e) => setServerUrl(e.target.value)}
-              disabled={isConnected}
+              disabled={isConnected || status === 'connecting' || status === 'reconnecting'}
               style={{ flex: 1, fontSize: '12px' }}
               placeholder="ws://127.0.0.1:8085/ws"
             />
             <button
               onClick={handleConnectToggle}
-              className={isConnected ? 'btn-danger' : 'btn-primary'}
+              className={isConnected || status === 'connecting' || status === 'reconnecting' ? 'btn-danger' : 'btn-primary'}
               style={{ fontSize: '12px', padding: '6px 12px' }}
             >
-              {isConnected ? 'Disconnect' : status === 'connecting' ? 'Connecting...' : 'Connect'}
+              {isConnected
+                ? 'Disconnect'
+                : status === 'connecting'
+                ? 'Connecting...'
+                : status === 'reconnecting'
+                ? 'Cancel'
+                : 'Connect'}
             </button>
           </div>
 

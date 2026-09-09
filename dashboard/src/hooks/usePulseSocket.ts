@@ -2,8 +2,11 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { WireFrame } from '../types/telemetry';
 
 const MAX_FRAMES_BUFFER = 100;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const BASE_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 10000;
 
-export type SocketStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
+export type SocketStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error';
 
 export function usePulseSocket() {
   const [status, setStatus] = useState<SocketStatus>('disconnected');
@@ -15,6 +18,17 @@ export function usePulseSocket() {
 
   const socketRef = useRef<WebSocket | null>(null);
   const frameIdCounter = useRef<number>(0);
+  const shouldConnectRef = useRef<boolean>(false);
+  const intentionalDisconnectRef = useRef<boolean>(false);
+  const activeUrlRef = useRef<string>('');
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef<number>(0);
+  const subscribedRoomsRef = useRef<string[]>([]);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    subscribedRoomsRef.current = subscribedRooms;
+  }, [subscribedRooms]);
 
   const addFrame = useCallback((direction: 'inbound' | 'outbound', data: unknown) => {
     const id = `frm-${Date.now()}-${++frameIdCounter.current}`;
@@ -51,7 +65,7 @@ export function usePulseSocket() {
       room,
       payload: parsed,
       raw,
-      sizeBytes: new Blob([raw]).size
+      sizeBytes: typeof Blob !== 'undefined' ? new Blob([raw]).size : raw.length
     };
 
     setFrames((prev) => {
@@ -63,53 +77,182 @@ export function usePulseSocket() {
     });
   }, []);
 
-  const connect = useCallback((url: string) => {
+  const cleanupSocket = useCallback(() => {
     if (socketRef.current) {
-      socketRef.current.close();
+      const ws = socketRef.current;
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close(1000, 'Cleaning up socket');
+      }
       socketRef.current = null;
     }
+  }, []);
+
+  const doConnect = useCallback((url: string, isReconnecting: boolean) => {
+    // If a socket is already open or connecting to the same URL and not reconnecting, don't create duplicate
+    if (
+      socketRef.current &&
+      (socketRef.current.readyState === WebSocket.OPEN || socketRef.current.readyState === WebSocket.CONNECTING) &&
+      activeUrlRef.current === url &&
+      !isReconnecting
+    ) {
+      return;
+    }
+
+    cleanupSocket();
 
     try {
-      setStatus('connecting');
+      setStatus(isReconnecting ? 'reconnecting' : 'connecting');
       setLastError(null);
 
       const ws = new WebSocket(url);
       socketRef.current = ws;
 
       ws.onopen = () => {
+        if (socketRef.current !== ws) return;
         setStatus('connected');
         setLastError(null);
+        reconnectAttemptsRef.current = 0;
+
+        // Resubscribe to existing desired rooms upon connection/reconnection
+        if (subscribedRoomsRef.current.length > 0) {
+          subscribedRoomsRef.current.forEach((room) => {
+            const subMessage = {
+              type: 'ROOM_JOIN',
+              target: { roomId: room },
+              payload: { roomId: room }
+            };
+            const subStr = JSON.stringify(subMessage);
+            ws.send(subStr);
+            addFrame('outbound', subStr);
+          });
+        }
       };
 
       ws.onmessage = (event) => {
+        if (socketRef.current !== ws) return;
         addFrame('inbound', event.data);
+
+        // Detect incoming SYS_PING and immediately reply with canonical SYS_PONG
+        try {
+          const rawStr = typeof event.data === 'string' ? event.data : '';
+          if (rawStr) {
+            const parsed = JSON.parse(rawStr);
+            if (parsed && parsed.type === 'SYS_PING') {
+              const pongEnvelope = {
+                type: 'SYS_PONG',
+                correlationId: (parsed.eventId as string) || (parsed.correlationId as string) || undefined,
+                timestamp: Date.now(),
+                payload: {}
+              };
+              const pongStr = JSON.stringify(pongEnvelope);
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(pongStr);
+                addFrame('outbound', pongStr);
+              }
+            }
+          }
+        } catch {
+          // Frame is not JSON or unexpected format; ignore for heartbeat
+        }
       };
 
       ws.onerror = () => {
+        if (socketRef.current !== ws) return;
         setStatus('error');
         setLastError('WebSocket transport error encountered');
       };
 
       ws.onclose = (event) => {
-        setStatus('disconnected');
+        if (socketRef.current !== ws) return;
         socketRef.current = null;
+
+        // If closed intentionally by user, stay disconnected
+        if (intentionalDisconnectRef.current || !shouldConnectRef.current) {
+          setStatus('disconnected');
+          return;
+        }
+
         if (!event.wasClean) {
           setLastError(`Connection closed abnormally (code ${event.code})`);
         }
+
+        // Trigger controlled reconnect with bounded backoff
+        scheduleReconnect();
       };
     } catch (err: unknown) {
       setStatus('error');
       setLastError(err instanceof Error ? err.message : String(err));
+      if (shouldConnectRef.current && !intentionalDisconnectRef.current) {
+        scheduleReconnect();
+      }
     }
-  }, [addFrame]);
+  }, [cleanupSocket, addFrame]);
+
+  const scheduleReconnect = useCallback(() => {
+    if (!shouldConnectRef.current || intentionalDisconnectRef.current) {
+      return;
+    }
+
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    const attempts = reconnectAttemptsRef.current;
+    if (attempts >= MAX_RECONNECT_ATTEMPTS) {
+      setStatus('disconnected');
+      setLastError(`Reconnection failed after ${MAX_RECONNECT_ATTEMPTS} attempts. Click Connect to retry.`);
+      shouldConnectRef.current = false;
+      return;
+    }
+
+    setStatus('reconnecting');
+    reconnectAttemptsRef.current = attempts + 1;
+
+    // Bounded exponential backoff: base 1000ms, factor 1.5, max 10000ms, plus up to 500ms random jitter
+    const expDelay = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * Math.pow(1.5, attempts));
+    const jitter = Math.floor(Math.random() * 500);
+    const delay = Math.min(MAX_BACKOFF_MS, expDelay + jitter);
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      if (shouldConnectRef.current && !intentionalDisconnectRef.current && activeUrlRef.current) {
+        doConnect(activeUrlRef.current, true);
+      }
+    }, delay);
+  }, [doConnect]);
+
+  const connect = useCallback((url: string) => {
+    shouldConnectRef.current = true;
+    intentionalDisconnectRef.current = false;
+    activeUrlRef.current = url;
+    reconnectAttemptsRef.current = 0;
+
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    doConnect(url, false);
+  }, [doConnect]);
 
   const disconnect = useCallback(() => {
-    if (socketRef.current) {
-      socketRef.current.close();
-      socketRef.current = null;
+    shouldConnectRef.current = false;
+    intentionalDisconnectRef.current = true;
+    reconnectAttemptsRef.current = 0;
+
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
     }
+
+    cleanupSocket();
     setStatus('disconnected');
-  }, []);
+  }, [cleanupSocket]);
 
   const sendRaw = useCallback((message: string | object) => {
     if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
@@ -124,20 +267,82 @@ export function usePulseSocket() {
   }, [addFrame]);
 
   const subscribe = useCallback((room: string) => {
-    if (sendRaw({ type: 'SUBSCRIBE', room })) {
-      setSubscribedRooms((prev) => Array.from(new Set([...prev, room])));
+    const frame = {
+      type: 'ROOM_JOIN',
+      target: { roomId: room },
+      payload: { roomId: room }
+    };
+    if (sendRaw(frame)) {
+      setSubscribedRooms((prev) => {
+        const next = Array.from(new Set([...prev, room]));
+        subscribedRoomsRef.current = next;
+        return next;
+      });
     }
   }, [sendRaw]);
 
   const unsubscribe = useCallback((room: string) => {
-    if (sendRaw({ type: 'UNSUBSCRIBE', room })) {
-      setSubscribedRooms((prev) => prev.filter((r) => r !== room));
+    const frame = {
+      type: 'ROOM_LEAVE',
+      target: { roomId: room },
+      payload: { roomId: room }
+    };
+    if (sendRaw(frame)) {
+      setSubscribedRooms((prev) => {
+        const next = prev.filter((r) => r !== room);
+        subscribedRoomsRef.current = next;
+        return next;
+      });
     }
   }, [sendRaw]);
 
   const clearFrames = useCallback(() => {
     setFrames([]);
   }, []);
+
+  // Handle browser visibility changes
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (typeof document === 'undefined') return;
+
+      if (document.visibilityState === 'visible') {
+        if (!shouldConnectRef.current || intentionalDisconnectRef.current) {
+          return;
+        }
+
+        const ws = socketRef.current;
+        // If already connected or actively connecting, do not duplicate
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+          return;
+        }
+
+        // Socket dropped while hidden, reconnect immediately
+        if (activeUrlRef.current) {
+          if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+          doConnect(activeUrlRef.current, true);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [doConnect]);
+
+  // Cleanup on hook unmount
+  useEffect(() => {
+    return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      cleanupSocket();
+    };
+  }, [cleanupSocket]);
 
   // 1-Click Load Generator: Send 500 frames in micro-batches
   const triggerBurstLoad = useCallback(async (room: string = 'load-test', count: number = 500) => {
@@ -187,14 +392,6 @@ export function usePulseSocket() {
 
     sendBatch();
   }, [addFrame]);
-
-  useEffect(() => {
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.close();
-      }
-    };
-  }, []);
 
   return {
     status,
