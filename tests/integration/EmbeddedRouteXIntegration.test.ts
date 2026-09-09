@@ -22,7 +22,7 @@ describe('Embedded RouteX ↔ Pulse Single-Port Integration Suite', () => {
   const openSockets = new Set<WebSocket | net.Socket>();
 
   beforeAll(async () => {
-    const routeXModule = await dynamicImport('file:///D:/RouteX/RouteX/dist/src/server/gateway-server.js');
+    const routeXModule = await dynamicImport('@ankit18193/routex-gateway');
     const RouteXGatewayServer = routeXModule.RouteXGatewayServer;
     // 1. Start Mock Upstream Server (handles both HTTP /api/hello and WS /ws-upstream)
     await new Promise<void>((resolve, reject) => {
