@@ -367,6 +367,15 @@ export class PulseServer {
           });
 
           this.httpServer.on('upgrade', async (req: http.IncomingMessage, socket, head) => {
+            // Prevent uncaughtException from client TCP resets (ECONNRESET/EPIPE) during handshake
+            socket.on('error', (err: unknown) => {
+              logger.debug('Socket error during HTTP upgrade handshake', {
+                component: 'PulseServer',
+                event: 'UPGRADE_SOCKET_ERROR',
+                error: err instanceof Error ? err.message : String(err)
+              });
+            });
+
             if (this.isShuttingDown) {
               this.metricsRegistry.getCounter('pulse_connections_rejected_total')?.inc({ reason: 'draining' });
               socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
