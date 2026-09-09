@@ -22,7 +22,7 @@ services:
     name: pulse-server
     runtime: node
     plan: free
-    buildCommand: npm ci && npm ci --prefix dashboard && npm run build && npm run build:dashboard
+    buildCommand: npm ci && npm --prefix dashboard ci --include=dev && npm run build && npm run build:dashboard
     startCommand: npm start
     healthCheckPath: /healthz
     envVars:
