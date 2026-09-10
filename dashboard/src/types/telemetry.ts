@@ -64,6 +64,20 @@ export interface WireFrame {
   sizeBytes: number;
 }
 
+export interface MessageActivity {
+  id: string;
+  correlationId?: string;
+  direction: 'sent' | 'received';
+  roomId: string;
+  senderId?: string;
+  content: string;
+  timestamp: string;
+  timestampMs: number;
+  status: 'pending' | 'delivered' | 'failed';
+  ackReceivedAt?: string;
+  rawPayload?: Record<string, unknown>;
+}
+
 export interface SystemEvent {
   id: string;
   timestamp: string;

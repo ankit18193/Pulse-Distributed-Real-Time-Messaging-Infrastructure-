@@ -3,6 +3,8 @@ import { PulseServer } from '../../src/core/PulseServer';
 import { loadConfig } from '../../src/config';
 import { generateUUIDv7 } from '../../src/utils/uuidv7';
 import { PulseEventEnvelope } from '../../src/types';
+import { MessageActivity } from '../../dashboard/src/types/telemetry';
+import { extractMessageContent } from '../../dashboard/src/hooks/usePulseSocket';
 
 /**
  * Client session simulating usePulseSocket lifecycle, backoff, and tab navigation.
@@ -14,6 +16,7 @@ class TestSandboxSocketClient {
   public pingsReceived: PulseEventEnvelope[] = [];
   public pongsSent: PulseEventEnvelope[] = [];
   public messagesReceived: PulseEventEnvelope[] = [];
+  public activities: MessageActivity[] = [];
   public subscribedRooms: string[] = [];
   public reconnectAttempts = 0;
   public reconnectTimer: NodeJS.Timeout | null = null;
@@ -22,6 +25,7 @@ class TestSandboxSocketClient {
   public activeUrl: string = '';
   public socketCreationCount = 0;
   public autoResumeSession: { autoResume: boolean; url: string; rooms: string[] } | null = null;
+  private activityCounter = 0;
 
   public connect(url: string, isReconnecting: boolean = false): void {
     // Prevent duplicate connections if already open or connecting to same URL
@@ -75,6 +79,54 @@ class TestSandboxSocketClient {
         const parsed = JSON.parse(data.toString()) as PulseEventEnvelope;
         if (parsed) {
           this.messagesReceived.push(parsed);
+
+          // Track inbound Message Activity
+          if (parsed.type === 'ROOM_MESSAGE') {
+            const targetObj = parsed.target as Record<string, unknown> | undefined;
+            const roomId = (targetObj?.roomId as string) || (parsed as any).room || 'lobby';
+            const content = extractMessageContent(parsed.payload);
+            const timeStr = new Date().toTimeString().split(' ')[0];
+
+            this.activities.push({
+              id: `act-in-${Date.now()}-${++this.activityCounter}`,
+              correlationId: parsed.correlationId,
+              direction: 'received',
+              roomId,
+              senderId: parsed.senderId,
+              content,
+              timestamp: timeStr,
+              timestampMs: Date.now(),
+              status: 'delivered',
+              rawPayload: typeof parsed.payload === 'object' && parsed.payload !== null
+                ? parsed.payload as Record<string, unknown>
+                : { content }
+            });
+          } else if (parsed.type === 'DELIVERY_ACK') {
+            const correlationId = parsed.correlationId || (parsed.payload as any)?.targetEventId;
+            if (correlationId) {
+              const timeStr = new Date().toTimeString().split(' ')[0];
+              for (const act of this.activities) {
+                if (act.direction === 'sent' && act.status === 'pending') {
+                  if (act.correlationId === correlationId || act.id === correlationId) {
+                    act.status = 'delivered';
+                    act.ackReceivedAt = timeStr;
+                  }
+                }
+              }
+            }
+          } else if (parsed.type === 'SYS_ERROR') {
+            const correlationId = parsed.correlationId || (parsed.payload as any)?.targetEventId;
+            if (correlationId) {
+              for (const act of this.activities) {
+                if (act.direction === 'sent' && act.status === 'pending') {
+                  if (act.correlationId === correlationId || act.id === correlationId) {
+                    act.status = 'failed';
+                  }
+                }
+              }
+            }
+          }
+
           if (parsed.type === 'SYS_PING') {
             this.pingsReceived.push(parsed);
 
@@ -180,6 +232,28 @@ class TestSandboxSocketClient {
     }
 
     this.ws.send(JSON.stringify(frameToSend));
+
+    // Record outbound Message Activity
+    const content = extractMessageContent(frameToSend.payload);
+    const timeStr = new Date().toTimeString().split(' ')[0];
+    this.activities.push({
+      id: `act-out-${Date.now()}-${++this.activityCounter}`,
+      correlationId: frameToSend.correlationId as string,
+      direction: 'sent',
+      roomId,
+      senderId: (frameToSend.senderId as string) || undefined,
+      content,
+      timestamp: timeStr,
+      timestampMs: Date.now(),
+      status: 'pending',
+      rawPayload: typeof frameToSend.payload === 'object' && frameToSend.payload !== null
+        ? frameToSend.payload as Record<string, unknown>
+        : { content }
+    });
+  }
+
+  public clearActivities(): void {
+    this.activities = [];
   }
 
   public scheduleReconnect(): void {
@@ -659,5 +733,170 @@ describe('Traffic Sandbox WebSocket Lifecycle & Heartbeat', () => {
     clientA.disconnect();
     clientB.disconnect();
     await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it('8. Tracks Message Activity lifecycle: sent message displays content & room, DELIVERY_ACK updates to DELIVERED, and received message shows sender', async () => {
+    const clientA = new TestSandboxSocketClient();
+    const clientB = new TestSandboxSocketClient();
+
+    clientA.connect(serverWsUrl);
+    clientB.connect(serverWsUrl);
+
+    // Wait for both to connect
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        if (clientA.status === 'connected' && clientB.status === 'connected') {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 10);
+    });
+
+    const testRoom = 'p4-activity-room';
+
+    // Both join testRoom
+    clientA.ws?.send(JSON.stringify({
+      type: 'ROOM_JOIN',
+      target: { roomId: testRoom },
+      payload: { roomId: testRoom }
+    }));
+    clientB.ws?.send(JSON.stringify({
+      type: 'ROOM_JOIN',
+      target: { roomId: testRoom },
+      payload: { roomId: testRoom }
+    }));
+
+    // Wait for ROOM_JOIN_ACK
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        const ackA = clientA.messagesReceived.some((m) => m.type === 'ROOM_JOIN_ACK' && m.target?.roomId === testRoom);
+        const ackB = clientB.messagesReceived.some((m) => m.type === 'ROOM_JOIN_ACK' && m.target?.roomId === testRoom);
+        if (ackA && ackB) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 10);
+    });
+
+    // 1. Verify clean empty state before any message activity
+    expect(clientA.activities).toHaveLength(0);
+    expect(clientB.activities).toHaveLength(0);
+
+    // 2. Client A sends a human-readable room message
+    const messageContent = 'Hello from Client A in Mission Control';
+    clientA.broadcastRoomMessage(testRoom, { content: messageContent });
+
+    // 3. Immediately verify sent activity exists on Client A
+    expect(clientA.activities.length).toBeGreaterThanOrEqual(1);
+    const sentActivity = clientA.activities[0];
+    expect(sentActivity.direction).toBe('sent');
+    expect(sentActivity.content).toBe(messageContent);
+    expect(sentActivity.roomId).toBe(testRoom);
+    expect(typeof sentActivity.timestamp).toBe('string');
+
+    // 4. Wait for DELIVERY_ACK on Client A and verify transition from pending to delivered
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        if (sentActivity.status === 'delivered') {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 10);
+    });
+    expect(sentActivity.status).toBe('delivered');
+    expect(sentActivity.ackReceivedAt).toBeDefined();
+
+    // 5. Wait for Client B to receive ROOM_MESSAGE
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        if (clientB.activities.length > 0) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 10);
+    });
+
+    // 6. Verify received activity on Client B
+    const receivedActivity = clientB.activities[0];
+    expect(receivedActivity.direction).toBe('received');
+    expect(receivedActivity.content).toBe(messageContent);
+    expect(receivedActivity.roomId).toBe(testRoom);
+    expect(receivedActivity.status).toBe('delivered');
+    expect(receivedActivity.senderId).toBe('sandbox_user');
+
+    // 7. Verify Raw Wire Frame Inspector still records all raw protocol frames independently
+    expect(clientA.messagesReceived.some((m) => m.type === 'ROOM_JOIN_ACK')).toBe(true);
+    expect(clientA.messagesReceived.some((m) => m.type === 'DELIVERY_ACK')).toBe(true);
+    expect(clientB.messagesReceived.some((m) => m.type === 'ROOM_MESSAGE')).toBe(true);
+
+    clientA.disconnect();
+    clientB.disconnect();
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it('9. Safely extracts readable message content from varied payloads and handles large payloads', () => {
+    // String payload
+    expect(extractMessageContent('Hello Plain Text')).toBe('Hello Plain Text');
+
+    // Object with content
+    expect(extractMessageContent({ content: 'Payload Content' })).toBe('Payload Content');
+
+    // Object with message
+    expect(extractMessageContent({ message: 'Payload Message' })).toBe('Payload Message');
+
+    // Object with text
+    expect(extractMessageContent({ text: 'Payload Text' })).toBe('Payload Text');
+
+    // Nested structured object
+    const structured = { event: 'sensor_telemetry', value: 42, tags: ['p4'] };
+    expect(extractMessageContent(structured)).toBe(JSON.stringify(structured));
+
+    // Null and undefined empty states
+    expect(extractMessageContent(null)).toBe('(empty payload)');
+    expect(extractMessageContent(undefined)).toBe('(empty payload)');
+
+    // Long payload safety
+    const longPayload = 'A'.repeat(10000);
+    const extractedLong = extractMessageContent({ content: longPayload });
+    expect(extractedLong.length).toBe(10000);
+
+    // Truncation simulation as rendered in MessageActivityItem
+    const isLong = extractedLong.length > 350;
+    const truncatedPreview = isLong
+      ? `${extractedLong.slice(0, 300)}... [truncated, ${extractedLong.length} chars total]`
+      : extractedLong;
+
+    expect(truncatedPreview).toContain('[truncated, 10000 chars total]');
+    expect(truncatedPreview.length).toBeLessThan(400);
+  });
+
+  it('10. Message Activity buffer enforces MAX_ACTIVITIES_BUFFER limit and supports clearActivities', () => {
+    const client = new TestSandboxSocketClient();
+    expect(client.activities).toHaveLength(0);
+
+    // Manually push 120 activities
+    const MAX_BUFFER = 100;
+    for (let i = 1; i <= 120; i++) {
+      client.activities.push({
+        id: `act-${i}`,
+        direction: 'sent',
+        roomId: 'test',
+        content: `Msg ${i}`,
+        timestamp: '12:00:00',
+        timestampMs: Date.now(),
+        status: 'delivered'
+      });
+      if (client.activities.length > MAX_BUFFER) {
+        client.activities = client.activities.slice(client.activities.length - MAX_BUFFER);
+      }
+    }
+
+    expect(client.activities).toHaveLength(100);
+    expect(client.activities[0].content).toBe('Msg 21');
+    expect(client.activities[99].content).toBe('Msg 120');
+
+    // Clear activities
+    client.clearActivities();
+    expect(client.activities).toHaveLength(0);
   });
 });

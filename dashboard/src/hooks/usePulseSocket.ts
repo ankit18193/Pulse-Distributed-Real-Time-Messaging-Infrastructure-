@@ -1,16 +1,45 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { WireFrame } from '../types/telemetry';
+import { WireFrame, MessageActivity } from '../types/telemetry';
 
 const MAX_FRAMES_BUFFER = 100;
+const MAX_ACTIVITIES_BUFFER = 100;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 10000;
 
 export type SocketStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error';
 
+/**
+ * Extracts a human-readable message string from arbitrary payload structures.
+ */
+export function extractMessageContent(payload: unknown): string {
+  if (payload === null || payload === undefined) {
+    return '(empty payload)';
+  }
+  if (typeof payload === 'string') {
+    return payload;
+  }
+  if (typeof payload === 'object') {
+    const obj = payload as Record<string, unknown>;
+    if (typeof obj.content === 'string') return obj.content;
+    if (typeof obj.message === 'string') return obj.message;
+    if (typeof obj.text === 'string') return obj.text;
+    if (obj.content !== undefined && typeof obj.content !== 'object') return String(obj.content);
+    if (obj.message !== undefined && typeof obj.message !== 'object') return String(obj.message);
+    if (obj.text !== undefined && typeof obj.text !== 'object') return String(obj.text);
+    try {
+      return JSON.stringify(payload);
+    } catch {
+      return String(payload);
+    }
+  }
+  return String(payload);
+}
+
 export function usePulseSocket() {
   const [status, setStatus] = useState<SocketStatus>('disconnected');
   const [frames, setFrames] = useState<WireFrame[]>([]);
+  const [activities, setActivities] = useState<MessageActivity[]>([]);
   const [subscribedRooms, setSubscribedRooms] = useState<string[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [isBursting, setIsBursting] = useState<boolean>(false);
@@ -18,6 +47,7 @@ export function usePulseSocket() {
 
   const socketRef = useRef<WebSocket | null>(null);
   const frameIdCounter = useRef<number>(0);
+  const activityIdCounter = useRef<number>(0);
   const shouldConnectRef = useRef<boolean>(false);
   const intentionalDisconnectRef = useRef<boolean>(false);
   const activeUrlRef = useRef<string>('');
@@ -138,27 +168,111 @@ export function usePulseSocket() {
         if (socketRef.current !== ws) return;
         addFrame('inbound', event.data);
 
-        // Detect incoming SYS_PING and immediately reply with canonical SYS_PONG
         try {
           const rawStr = typeof event.data === 'string' ? event.data : '';
           if (rawStr) {
             const parsed = JSON.parse(rawStr);
-            if (parsed && parsed.type === 'SYS_PING') {
-              const pongEnvelope = {
-                type: 'SYS_PONG',
-                correlationId: (parsed.eventId as string) || (parsed.correlationId as string) || undefined,
-                timestamp: Date.now(),
-                payload: {}
-              };
-              const pongStr = JSON.stringify(pongEnvelope);
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(pongStr);
-                addFrame('outbound', pongStr);
+            if (parsed && typeof parsed === 'object') {
+              const eventType = parsed.type as string;
+
+              // Detect incoming SYS_PING and immediately reply with canonical SYS_PONG
+              if (eventType === 'SYS_PING') {
+                const pongEnvelope = {
+                  type: 'SYS_PONG',
+                  correlationId: (parsed.eventId as string) || (parsed.correlationId as string) || undefined,
+                  timestamp: Date.now(),
+                  payload: {}
+                };
+                const pongStr = JSON.stringify(pongEnvelope);
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(pongStr);
+                  addFrame('outbound', pongStr);
+                }
+              }
+
+              // Inbound ROOM_MESSAGE: Record received activity
+              else if (eventType === 'ROOM_MESSAGE') {
+                const targetObj = parsed.target as Record<string, unknown> | undefined;
+                const roomId = (targetObj?.roomId as string) || (parsed.room as string) || 'lobby';
+                const senderId = (parsed.senderId as string) || undefined;
+                const content = extractMessageContent(parsed.payload);
+                const timeStr = new Date().toTimeString().split(' ')[0];
+
+                const activity: MessageActivity = {
+                  id: `act-in-${Date.now()}-${++activityIdCounter.current}`,
+                  correlationId: (parsed.correlationId as string) || undefined,
+                  direction: 'received',
+                  roomId,
+                  senderId,
+                  content,
+                  timestamp: timeStr,
+                  timestampMs: Date.now(),
+                  status: 'delivered',
+                  rawPayload: typeof parsed.payload === 'object' && parsed.payload !== null
+                    ? parsed.payload as Record<string, unknown>
+                    : { content }
+                };
+
+                setActivities((prev) => {
+                  const next = [...prev, activity];
+                  if (next.length > MAX_ACTIVITIES_BUFFER) {
+                    return next.slice(next.length - MAX_ACTIVITIES_BUFFER);
+                  }
+                  return next;
+                });
+              }
+
+              // Inbound DELIVERY_ACK: Reconcile pending sent message
+              else if (eventType === 'DELIVERY_ACK') {
+                const correlationId = (parsed.correlationId as string) || (parsed.payload?.targetEventId as string);
+                if (correlationId) {
+                  const timeStr = new Date().toTimeString().split(' ')[0];
+                  setActivities((prev) => {
+                    let matched = false;
+                    const next = prev.map((act) => {
+                      if (act.direction === 'sent' && act.status === 'pending') {
+                        if (act.correlationId === correlationId || act.id === correlationId) {
+                          matched = true;
+                          return {
+                            ...act,
+                            status: 'delivered' as const,
+                            ackReceivedAt: timeStr
+                          };
+                        }
+                      }
+                      return act;
+                    });
+                    return matched ? next : prev;
+                  });
+                }
+              }
+
+              // Inbound SYS_ERROR: Check if associated with pending sent message
+              else if (eventType === 'SYS_ERROR') {
+                const correlationId = (parsed.correlationId as string) || (parsed.payload?.targetEventId as string);
+                if (correlationId) {
+                  setActivities((prev) => {
+                    let matched = false;
+                    const next = prev.map((act) => {
+                      if (act.direction === 'sent' && act.status === 'pending') {
+                        if (act.correlationId === correlationId || act.id === correlationId) {
+                          matched = true;
+                          return {
+                            ...act,
+                            status: 'failed' as const
+                          };
+                        }
+                      }
+                      return act;
+                    });
+                    return matched ? next : prev;
+                  });
+                }
               }
             }
           }
         } catch {
-          // Frame is not JSON or unexpected format; ignore for heartbeat
+          // Frame is not JSON or unexpected format; ignore
         }
       };
 
@@ -179,7 +293,11 @@ export function usePulseSocket() {
         }
 
         if (!event.wasClean) {
-          setLastError(`Connection closed abnormally (code ${event.code})`);
+          if (event.code === 1006) {
+            setLastError('Connection closed abnormally (code 1006) — Handshake rejected by server (check auth token or port)');
+          } else {
+            setLastError(`Connection closed abnormally (code ${event.code})`);
+          }
         }
 
         // Trigger controlled reconnect with bounded backoff
@@ -265,6 +383,50 @@ export function usePulseSocket() {
     const str = typeof message === 'string' ? message : JSON.stringify(message);
     socketRef.current.send(str);
     addFrame('outbound', str);
+
+    // Track sent message activity for ROOM_MESSAGE and DIRECT_MESSAGE
+    try {
+      let parsedObj: Record<string, unknown> | null = null;
+      if (typeof message === 'object' && message !== null) {
+        parsedObj = message as Record<string, unknown>;
+      } else if (typeof message === 'string') {
+        parsedObj = JSON.parse(message);
+      }
+
+      if (parsedObj && (parsedObj.type === 'ROOM_MESSAGE' || parsedObj.type === 'DIRECT_MESSAGE')) {
+        const targetObj = parsedObj.target as Record<string, unknown> | undefined;
+        const roomId = (targetObj?.roomId as string) || (parsedObj.room as string) || 'lobby';
+        const correlationId = (parsedObj.correlationId as string) || undefined;
+        const content = extractMessageContent(parsedObj.payload);
+        const timeStr = new Date().toTimeString().split(' ')[0];
+
+        const activity: MessageActivity = {
+          id: `act-out-${Date.now()}-${++activityIdCounter.current}`,
+          correlationId,
+          direction: 'sent',
+          roomId,
+          senderId: (parsedObj.senderId as string) || undefined,
+          content,
+          timestamp: timeStr,
+          timestampMs: Date.now(),
+          status: 'pending',
+          rawPayload: typeof parsedObj.payload === 'object' && parsedObj.payload !== null
+            ? parsedObj.payload as Record<string, unknown>
+            : { content }
+        };
+
+        setActivities((prev) => {
+          const next = [...prev, activity];
+          if (next.length > MAX_ACTIVITIES_BUFFER) {
+            return next.slice(next.length - MAX_ACTIVITIES_BUFFER);
+          }
+          return next;
+        });
+      }
+    } catch {
+      // ignore parsing error
+    }
+
     return true;
   }, [addFrame]);
 
@@ -300,6 +462,10 @@ export function usePulseSocket() {
 
   const clearFrames = useCallback(() => {
     setFrames([]);
+  }, []);
+
+  const clearActivities = useCallback(() => {
+    setActivities([]);
   }, []);
 
   // Handle browser visibility changes
@@ -401,6 +567,8 @@ export function usePulseSocket() {
   return {
     status,
     frames,
+    activities,
+    clearActivities,
     subscribedRooms,
     lastError,
     connect,

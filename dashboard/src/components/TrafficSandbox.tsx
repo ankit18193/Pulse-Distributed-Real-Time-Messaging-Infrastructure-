@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { usePulseSocket } from '../hooks/usePulseSocket';
-import { WireFrame } from '../types/telemetry';
+import { WireFrame, MessageActivity } from '../types/telemetry';
 import {
   Terminal,
   Zap,
@@ -14,7 +14,10 @@ import {
   ArrowUpRight,
   Radio,
   Server,
-  RefreshCw
+  RefreshCw,
+  Activity,
+  ArrowDown,
+  XCircle
 } from 'lucide-react';
 
 interface FrameItemProps {
@@ -121,12 +124,122 @@ const FrameItem: React.FC<FrameItemProps> = ({ frame }) => {
   );
 };
 
+interface MessageActivityItemProps {
+  activity: MessageActivity;
+}
+
+const MessageActivityItem: React.FC<MessageActivityItemProps> = ({ activity }) => {
+  const [expanded, setExpanded] = useState(false);
+  const isSent = activity.direction === 'sent';
+  const isLong = activity.content.length > 350;
+  const displayContent = isLong && !expanded
+    ? `${activity.content.slice(0, 300)}... [truncated, ${activity.content.length} chars total]`
+    : activity.content;
+
+  return (
+    <div style={{
+      background: 'var(--pulse-bg-surface)',
+      border: '1px solid var(--pulse-border-subtle)',
+      borderLeft: isSent
+        ? '3px solid var(--pulse-accent-emerald)'
+        : '3px solid var(--pulse-accent-cyan)',
+      borderRadius: '6px',
+      padding: '8px 12px',
+      marginBottom: '8px',
+      fontFamily: 'var(--font-sans)',
+      fontSize: '12px'
+    }}>
+      {/* Activity Header */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '8px',
+        marginBottom: '6px',
+        flexWrap: 'wrap'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {isSent ? (
+            <span className="badge badge-emerald" style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+              <ArrowUpRight size={11} /> SENT
+            </span>
+          ) : (
+            <span className="badge badge-cyan" style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+              <ArrowDownLeft size={11} /> RECEIVED
+            </span>
+          )}
+
+          <span className="badge badge-muted" style={{ fontSize: '10px' }}>
+            #{activity.roomId}
+          </span>
+
+          {!isSent && activity.senderId && activity.senderId !== 'unknown' && (
+            <span className="badge badge-violet" style={{ fontSize: '10px' }}>
+              from: {activity.senderId}
+            </span>
+          )}
+
+          {isSent && (
+            activity.status === 'delivered' ? (
+              <span
+                className="badge badge-emerald"
+                style={{ fontSize: '10px' }}
+                title={activity.ackReceivedAt ? `DELIVERY_ACK received at ${activity.ackReceivedAt}` : 'DELIVERY_ACK confirmed'}
+              >
+                <Check size={10} /> DELIVERED
+              </span>
+            ) : activity.status === 'failed' ? (
+              <span className="badge badge-crimson" style={{ fontSize: '10px' }}>
+                <XCircle size={10} /> REJECTED
+              </span>
+            ) : (
+              <span className="badge badge-amber" style={{ fontSize: '10px' }} title="Awaiting server DELIVERY_ACK">
+                <RefreshCw size={9} className="spin" /> PENDING ACK
+              </span>
+            )
+          )}
+        </div>
+
+        <span style={{ color: 'var(--pulse-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+          {activity.timestamp}
+        </span>
+      </div>
+
+      {/* Message Content */}
+      <div style={{
+        color: 'var(--pulse-text-primary)',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        overflowWrap: 'anywhere',
+        lineHeight: 1.45
+      }}>
+        {displayContent}
+      </div>
+
+      {/* Truncation toggle */}
+      {isLong && (
+        <div style={{ marginTop: '4px' }}>
+          <button
+            onClick={() => setExpanded((p) => !p)}
+            className="btn-secondary"
+            style={{ padding: '2px 6px', fontSize: '10px' }}
+          >
+            {expanded ? 'Show Less' : `Show Full (${activity.content.length} chars)`}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const SANDBOX_SESSION_KEY = 'pulse_sandbox_session';
 
 export const TrafficSandbox: React.FC = () => {
   const {
     status,
     frames,
+    activities,
+    clearActivities,
     subscribedRooms,
     lastError,
     connect,
@@ -159,6 +272,42 @@ export const TrafficSandbox: React.FC = () => {
   const [msgPayload, setMsgPayload] = useState('{"content": "Hello from Mission Control"}');
   const [directionFilter, setDirectionFilter] = useState<'all' | 'inbound' | 'outbound'>('all');
   const [resumedNotice, setResumedNotice] = useState<string | null>(null);
+
+  // Message Activity auto-scroll & scroll-lock state
+  const activityListRef = useRef<HTMLDivElement>(null);
+  const isActivityScrolledUpRef = useRef<boolean>(false);
+  const [hasNewActivities, setHasNewActivities] = useState<boolean>(false);
+
+  const handleActivityScroll = () => {
+    if (!activityListRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = activityListRef.current;
+    const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
+    const isUp = distanceFromBottom > 35;
+    isActivityScrolledUpRef.current = isUp;
+    if (!isUp) {
+      setHasNewActivities(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!activityListRef.current) return;
+    if (!isActivityScrolledUpRef.current) {
+      activityListRef.current.scrollTop = activityListRef.current.scrollHeight;
+    } else {
+      setHasNewActivities(true);
+    }
+  }, [activities]);
+
+  const scrollToNewestActivity = () => {
+    if (activityListRef.current) {
+      activityListRef.current.scrollTo({
+        top: activityListRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+      setHasNewActivities(false);
+      isActivityScrolledUpRef.current = false;
+    }
+  };
 
   const isConnected = status === 'connected';
 
@@ -325,7 +474,7 @@ export const TrafficSandbox: React.FC = () => {
   });
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(340px, 420px) 1fr', gap: '16px', height: '100%' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(340px, 420px) 1fr', gap: '16px', paddingBottom: '32px' }}>
       {/* Left Column: Interactive Dispatch & Load Controls */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
         {/* Connection Setup Card */}
@@ -398,14 +547,27 @@ export const TrafficSandbox: React.FC = () => {
           </div>
 
           <div style={{ marginBottom: lastError ? '10px' : '0' }}>
-            <input
-              type="text"
-              value={authToken}
-              onChange={(e) => setAuthToken(e.target.value)}
-              disabled={isConnected}
-              style={{ width: '100%', fontSize: '11px', fontFamily: 'var(--font-mono)' }}
-              placeholder="Auth Token (optional, e.g. pulse-admin-token)"
-            />
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+              <input
+                type="text"
+                value={authToken}
+                onChange={(e) => setAuthToken(e.target.value)}
+                disabled={isConnected}
+                style={{ flex: 1, fontSize: '11px', fontFamily: 'var(--font-mono)' }}
+                placeholder="HMAC Auth Token (e.g. eyJ...)"
+              />
+              {import.meta.env.DEV && !isConnected && (
+                <button
+                  type="button"
+                  onClick={() => setAuthToken('eyJ1c2VySWQiOiJtaXNzaW9uX2NvbnRyb2xfYWRtaW4iLCJyb2xlcyI6WyJhZG1pbiIsInVzZXIiXSwiaWF0IjoxNzg5MDQwMzk4NjI1LCJleHAiOjE3ODk5MDQzOTg2MjV9.AhCRgrOjSUjLuG-szVinfrF51788-U8KV_tP1dt6dhM')}
+                  className="btn-secondary"
+                  style={{ fontSize: '10px', padding: '5px 8px', whiteSpace: 'nowrap' }}
+                  title="Populate valid local dev auth token signed with AUTH_SECRET"
+                >
+                  Fill Dev Token
+                </button>
+              )}
+            </div>
           </div>
 
           {lastError && (
@@ -577,92 +739,205 @@ export const TrafficSandbox: React.FC = () => {
         </div>
       </div>
 
-      {/* Right Column: Wire Frame Inspector */}
-      <div className="telemetry-card" style={{ display: 'flex', flexDirection: 'column', height: '620px' }}>
-        {/* Inspector Header */}
-        <div style={{
+      {/* Right Column: Message Activity & Raw Wire Frame Inspector */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', minWidth: 0 }}>
+        {/* Upper Panel: Message Activity */}
+        <div className="telemetry-card" style={{
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: '10px',
-          paddingBottom: '8px',
-          borderBottom: '1px solid var(--pulse-border-subtle)',
-          flexWrap: 'wrap',
-          gap: '8px'
+          flexDirection: 'column',
+          height: '290px',
+          position: 'relative',
+          padding: '14px'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Terminal size={16} color="var(--pulse-accent-cyan)" />
-            <span style={{ fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--pulse-text-primary)' }}>
-              Raw Wire Frame Inspector
-            </span>
-            <span className="badge badge-muted">
-              Ring Buffer: {frames.length}/100
-            </span>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {/* Direction Filter */}
-            <div style={{ display: 'flex', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--pulse-border-subtle)' }}>
-              {(['all', 'inbound', 'outbound'] as const).map((dir) => (
-                <button
-                  key={dir}
-                  onClick={() => setDirectionFilter(dir)}
-                  style={{
-                    padding: '3px 8px',
-                    fontSize: '11px',
-                    fontFamily: 'var(--font-mono)',
-                    textTransform: 'uppercase',
-                    background: directionFilter === dir ? 'var(--pulse-bg-card-hover)' : 'var(--pulse-bg-sunken)',
-                    color: directionFilter === dir ? 'var(--pulse-accent-cyan)' : 'var(--pulse-text-secondary)',
-                    border: 'none',
-                    cursor: 'pointer'
-                  }}
-                >
-                  {dir}
-                </button>
-              ))}
+          {/* Header */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '8px',
+            paddingBottom: '8px',
+            borderBottom: '1px solid var(--pulse-border-subtle)',
+            flexWrap: 'wrap',
+            gap: '8px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Activity size={16} color="var(--pulse-accent-emerald)" />
+              <span style={{ fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--pulse-text-primary)' }}>
+                Message Activity
+              </span>
+              <span className="badge badge-muted">
+                {activities.length}/100
+              </span>
             </div>
 
-            {/* Clear Frames */}
-            <button
-              onClick={clearFrames}
-              className="btn-secondary"
-              style={{ padding: '4px 8px', fontSize: '11px' }}
-              title="Clear captured wire frames"
-            >
-              <Trash2 size={12} />
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <button
+                onClick={clearActivities}
+                className="btn-secondary"
+                style={{ padding: '3px 8px', fontSize: '11px' }}
+                title="Clear message activity history"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
           </div>
+
+          {/* Activity Viewport */}
+          <div
+            ref={activityListRef}
+            onScroll={handleActivityScroll}
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              background: 'var(--pulse-bg-sunken)',
+              padding: '8px',
+              borderRadius: '6px',
+              border: '1px solid var(--pulse-border-subtle)',
+              position: 'relative'
+            }}
+          >
+            {activities.length === 0 ? (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+                color: 'var(--pulse-text-muted)',
+                fontSize: '12px',
+                gap: '6px',
+                textAlign: 'center',
+                padding: '24px 16px'
+              }}>
+                <Activity size={24} color="var(--pulse-text-muted)" style={{ opacity: 0.5 }} />
+                <span style={{ fontWeight: 600, color: 'var(--pulse-text-secondary)' }}>No message activity yet</span>
+                <span style={{ fontSize: '11px' }}>Send a room message to see activity here.</span>
+              </div>
+            ) : (
+              activities.map((act) => (
+                <MessageActivityItem key={act.id} activity={act} />
+              ))
+            )}
+          </div>
+
+          {/* Floating New Messages Pill */}
+          {hasNewActivities && (
+            <button
+              onClick={scrollToNewestActivity}
+              className="btn-secondary"
+              style={{
+                position: 'absolute',
+                bottom: '22px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                fontSize: '11px',
+                padding: '4px 10px',
+                background: 'var(--pulse-bg-card)',
+                borderColor: 'var(--pulse-accent-cyan)',
+                boxShadow: 'var(--pulse-glow-cyan)',
+                zIndex: 10,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+            >
+              <ArrowDown size={11} color="var(--pulse-accent-cyan)" /> New activity below
+            </button>
+          )}
         </div>
 
-        {/* Frame List Viewport */}
-        <div style={{
-          flex: 1,
-          overflowY: 'auto',
-          background: 'var(--pulse-bg-sunken)',
-          padding: '8px',
-          borderRadius: '6px',
-          border: '1px solid var(--pulse-border-subtle)'
+        {/* Lower Panel: Raw Wire Frame Inspector */}
+        <div className="telemetry-card" style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '290px',
+          padding: '14px'
         }}>
-          {filteredFrames.length === 0 ? (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              color: 'var(--pulse-text-muted)',
-              fontSize: '12px',
-              gap: '6px'
-            }}>
-              <Terminal size={24} color="var(--pulse-text-muted)" />
-              <span>No wire frames captured yet. Connect and send traffic to inspect.</span>
+          {/* Inspector Header */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '8px',
+            paddingBottom: '8px',
+            borderBottom: '1px solid var(--pulse-border-subtle)',
+            flexWrap: 'wrap',
+            gap: '8px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Terminal size={16} color="var(--pulse-accent-cyan)" />
+              <span style={{ fontSize: '13px', fontWeight: 600, textTransform: 'uppercase', color: 'var(--pulse-text-primary)' }}>
+                Raw Wire Frame Inspector
+              </span>
+              <span className="badge badge-muted">
+                Ring Buffer: {frames.length}/100
+              </span>
             </div>
-          ) : (
-            filteredFrames.map((frame) => (
-              <FrameItem key={frame.id} frame={frame} />
-            ))
-          )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {/* Direction Filter */}
+              <div style={{ display: 'flex', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--pulse-border-subtle)' }}>
+                {(['all', 'inbound', 'outbound'] as const).map((dir) => (
+                  <button
+                    key={dir}
+                    onClick={() => setDirectionFilter(dir)}
+                    style={{
+                      padding: '3px 8px',
+                      fontSize: '11px',
+                      fontFamily: 'var(--font-mono)',
+                      textTransform: 'uppercase',
+                      background: directionFilter === dir ? 'var(--pulse-bg-card-hover)' : 'var(--pulse-bg-sunken)',
+                      color: directionFilter === dir ? 'var(--pulse-accent-cyan)' : 'var(--pulse-text-secondary)',
+                      border: 'none',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {dir}
+                  </button>
+                ))}
+              </div>
+
+              {/* Clear Frames */}
+              <button
+                onClick={clearFrames}
+                className="btn-secondary"
+                style={{ padding: '4px 8px', fontSize: '11px' }}
+                title="Clear captured wire frames"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          </div>
+
+          {/* Frame List Viewport */}
+          <div style={{
+            flex: 1,
+            overflowY: 'auto',
+            background: 'var(--pulse-bg-sunken)',
+            padding: '8px',
+            borderRadius: '6px',
+            border: '1px solid var(--pulse-border-subtle)'
+          }}>
+            {filteredFrames.length === 0 ? (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+                color: 'var(--pulse-text-muted)',
+                fontSize: '12px',
+                gap: '6px'
+              }}>
+                <Terminal size={24} color="var(--pulse-text-muted)" />
+                <span>No wire frames captured yet. Connect and send traffic to inspect.</span>
+              </div>
+            ) : (
+              filteredFrames.map((frame) => (
+                <FrameItem key={frame.id} frame={frame} />
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>
