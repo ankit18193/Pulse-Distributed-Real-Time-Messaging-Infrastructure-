@@ -2,6 +2,9 @@
 
 ## Distributed Real-Time Messaging Infrastructure
 
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/e5626a7f-28a4-47df-adcf-fd9580d40876" />
+
+
 [![npm version](https://img.shields.io/npm/v/@ankit18193/pulse.svg?color=blue&logo=npm)](https://www.npmjs.com/package/@ankit18193/pulse)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg?logo=node.js)](package.json)
@@ -184,10 +187,9 @@ Pulse includes **Mission Control**, a real-time operations cockpit built with Re
 
 ### Mission Control
 
-[SCREENSHOT — Mission Control Overview]
 
-> Add screenshot here:
-> `docs/images/mission-control-overview.png`
+> <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/4264b443-0947-4fbc-8ca9-6277388c5114" />
+
 
 Live Mission Control:
 https://pulse-dashboard-qcyf.onrender.com
@@ -207,10 +209,9 @@ The **Traffic Sandbox** is a built-in diagnostic and testing interface within Mi
 - **Raw Wire Frame Inspector**: Ring buffer inspecting raw inbound and outbound JSON frames with direction filters (`ALL`, `INBOUND`, `OUTBOUND`).
 - **Heartbeat Auto-Response**: Automatically responds to incoming `SYS_PING` frames with `SYS_PONG` to verify connection reaping.
 
-[SCREENSHOT — Traffic Sandbox]
 
-> Add screenshot here:
-> `docs/images/traffic-sandbox.png`
+> <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/b20c43a6-4b9b-4da0-956f-6df86c832239" />
+
 
 ---
 
@@ -322,8 +323,6 @@ sequenceDiagram
 
 [SCREENSHOT — Graceful Shutdown / Health]
 
-> Add screenshot here:
-> `docs/images/health-readiness.png`
 
 ---
 
@@ -355,10 +354,7 @@ npm run test:soak
 npm run test:chaos
 ```
 
-[SCREENSHOT — Test Results]
 
-> Add screenshot here:
-> `docs/images/test-results.png`
 
 ---
 
@@ -412,10 +408,7 @@ Pulse is published on the NPM Registry as a reusable Node.js and TypeScript pack
 npm install @ankit18193/pulse
 ```
 
-[SCREENSHOT — NPM Package]
 
-> Add screenshot here:
-> `docs/images/npm-package.png`
 
 ---
 
@@ -739,39 +732,16 @@ Pulse is currently in **active production deployment**:
 
 ### 1. Mission Control Overview
 <!-- SCREENSHOT PLACEHOLDER -->
-<!-- Add: docs/images/mission-control-overview.png -->
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/f1f3e1b9-72dd-40fe-b4a3-4776ec749ac1" />
+
 
 ### 2. Traffic Sandbox
 <!-- SCREENSHOT PLACEHOLDER -->
-<!-- Add: docs/images/traffic-sandbox.png -->
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/a09d5a03-df6a-47d1-94c2-8c1638f9eef3" />
 
-### 3. RouteX Gateway
-<!-- SCREENSHOT PLACEHOLDER -->
-<!-- Add: docs/images/routex-gateway.png -->
 
-### 4. Redis / Distributed Topology
-<!-- SCREENSHOT PLACEHOLDER -->
-<!-- Add: docs/images/distributed-topology.png -->
 
-### 5. WebSocket Message Activity
-<!-- SCREENSHOT PLACEHOLDER -->
-<!-- Add: docs/images/message-activity.png -->
 
-### 6. Health & Readiness Endpoints
-<!-- SCREENSHOT PLACEHOLDER -->
-<!-- Add: docs/images/health-readiness.png -->
-
-### 7. NPM Package Surface
-<!-- SCREENSHOT PLACEHOLDER -->
-<!-- Add: docs/images/npm-package.png -->
-
-### 8. Automated Test Results
-<!-- SCREENSHOT PLACEHOLDER -->
-<!-- Add: docs/images/test-results.png -->
-
-### 9. Production Deployment on Render
-<!-- SCREENSHOT PLACEHOLDER -->
-<!-- Add: docs/images/production-deployment.png -->
 
 ---
 
