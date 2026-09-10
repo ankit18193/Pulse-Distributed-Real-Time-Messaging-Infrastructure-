@@ -156,7 +156,7 @@ export const TrafficSandbox: React.FC = () => {
   const [serverUrl, setServerUrl] = useState(defaultWsUrl);
   const [authToken, setAuthToken] = useState('');
   const [roomInput, setRoomInput] = useState('lobby');
-  const [msgPayload, setMsgPayload] = useState('{"message": "Hello from Mission Control"}');
+  const [msgPayload, setMsgPayload] = useState('{"content": "Hello from Mission Control"}');
   const [directionFilter, setDirectionFilter] = useState<'all' | 'inbound' | 'outbound'>('all');
   const [resumedNotice, setResumedNotice] = useState<string | null>(null);
 
@@ -245,22 +245,78 @@ export const TrafficSandbox: React.FC = () => {
     e.preventDefault();
     if (!isConnected) return;
 
+    const trimmedRoom = roomInput.trim() || 'lobby';
+    let frameToSend: Record<string, unknown>;
+
     try {
       const parsed = JSON.parse(msgPayload);
-      sendRaw({
-        type: 'BROADCAST',
-        room: roomInput,
-        data: parsed,
-        ts: Date.now()
-      });
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const candidateType = parsed.type;
+        if (candidateType === 'ROOM_MESSAGE' || candidateType === 'DIRECT_MESSAGE') {
+          // Canonical Pulse envelope provided directly
+          frameToSend = {
+            ...parsed,
+            target: parsed.target && typeof parsed.target === 'object'
+              ? parsed.target
+              : { roomId: trimmedRoom },
+            timestamp: parsed.timestamp || Date.now(),
+            correlationId: parsed.correlationId || `corr-${Date.now()}`,
+            ackRequired: parsed.ackRequired ?? true
+          };
+        } else if (candidateType === 'MESSAGE_SEND' || candidateType === 'BROADCAST') {
+          // Normalize legacy/accidental action types to canonical ROOM_MESSAGE
+          const payloadData = parsed.payload !== undefined
+            ? parsed.payload
+            : parsed.data !== undefined
+              ? parsed.data
+              : parsed;
+          frameToSend = {
+            type: 'ROOM_MESSAGE',
+            target: {
+              roomId: (parsed.target as any)?.roomId || parsed.room || trimmedRoom
+            },
+            payload: typeof payloadData === 'object' && payloadData !== null
+              ? payloadData
+              : { content: String(payloadData) },
+            timestamp: Date.now(),
+            correlationId: parsed.correlationId || `corr-${Date.now()}`,
+            ackRequired: true
+          };
+        } else {
+          // Valid JSON object represents the message payload
+          frameToSend = {
+            type: 'ROOM_MESSAGE',
+            target: { roomId: trimmedRoom },
+            payload: parsed,
+            timestamp: Date.now(),
+            correlationId: `corr-${Date.now()}`,
+            ackRequired: true
+          };
+        }
+      } else {
+        // Primitive parsed JSON (number, boolean, etc.)
+        frameToSend = {
+          type: 'ROOM_MESSAGE',
+          target: { roomId: trimmedRoom },
+          payload: { content: parsed },
+          timestamp: Date.now(),
+          correlationId: `corr-${Date.now()}`,
+          ackRequired: true
+        };
+      }
     } catch {
-      sendRaw({
-        type: 'BROADCAST',
-        room: roomInput,
-        message: msgPayload,
-        ts: Date.now()
-      });
+      // Raw string payload (non-JSON text in textarea)
+      frameToSend = {
+        type: 'ROOM_MESSAGE',
+        target: { roomId: trimmedRoom },
+        payload: { content: msgPayload },
+        timestamp: Date.now(),
+        correlationId: `corr-${Date.now()}`,
+        ackRequired: true
+      };
     }
+
+    sendRaw(frameToSend);
   };
 
   const filteredFrames = frames.filter((f) => {

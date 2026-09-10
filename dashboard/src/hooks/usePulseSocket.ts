@@ -43,7 +43,8 @@ export function usePulseSocket() {
       try {
         parsed = JSON.parse(data);
         type = (parsed.type as string) || (parsed.action as string) || 'MESSAGE';
-        room = parsed.room as string | undefined;
+        const targetObj = parsed.target as Record<string, unknown> | undefined;
+        room = (parsed.room as string | undefined) || (targetObj?.roomId as string | undefined);
         action = parsed.action as string | undefined;
       } catch {
         parsed = { raw: data };
@@ -52,7 +53,8 @@ export function usePulseSocket() {
       parsed = data as Record<string, unknown>;
       raw = JSON.stringify(data);
       type = (parsed.type as string) || (parsed.action as string) || 'MESSAGE';
-      room = parsed.room as string | undefined;
+      const targetObj = parsed.target as Record<string, unknown> | undefined;
+      room = (parsed.room as string | undefined) || (targetObj?.roomId as string | undefined);
       action = parsed.action as string | undefined;
     }
 
@@ -366,15 +368,18 @@ export function usePulseSocket() {
 
       const currentBatch = Math.min(batchSize, count - sentCount);
       for (let i = 0; i < currentBatch; i++) {
-        const payload = {
-          type: 'BROADCAST',
-          room,
-          seq: sentCount + i + 1,
-          ts: Date.now(),
-          client: 'load-generator',
-          entropy: Math.random().toString(36).substring(2, 10)
+        const envelope = {
+          type: 'ROOM_MESSAGE',
+          target: { roomId: room },
+          payload: {
+            content: `Load generator burst frame ${sentCount + i + 1}`,
+            seq: sentCount + i + 1,
+            client: 'load-generator',
+            entropy: Math.random().toString(36).substring(2, 10)
+          },
+          timestamp: Date.now()
         };
-        const str = JSON.stringify(payload);
+        const str = JSON.stringify(envelope);
         socketRef.current.send(str);
         addFrame('outbound', str);
       }

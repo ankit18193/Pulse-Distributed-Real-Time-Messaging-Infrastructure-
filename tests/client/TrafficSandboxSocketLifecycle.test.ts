@@ -13,6 +13,7 @@ class TestSandboxSocketClient {
   public ws: WebSocket | null = null;
   public pingsReceived: PulseEventEnvelope[] = [];
   public pongsSent: PulseEventEnvelope[] = [];
+  public messagesReceived: PulseEventEnvelope[] = [];
   public subscribedRooms: string[] = [];
   public reconnectAttempts = 0;
   public reconnectTimer: NodeJS.Timeout | null = null;
@@ -72,22 +73,25 @@ class TestSandboxSocketClient {
       if (this.ws !== ws) return;
       try {
         const parsed = JSON.parse(data.toString()) as PulseEventEnvelope;
-        if (parsed && parsed.type === 'SYS_PING') {
-          this.pingsReceived.push(parsed);
+        if (parsed) {
+          this.messagesReceived.push(parsed);
+          if (parsed.type === 'SYS_PING') {
+            this.pingsReceived.push(parsed);
 
-          // Canonical SYS_PONG response
-          const pongEnvelope: PulseEventEnvelope = {
-            eventId: generateUUIDv7(),
-            type: 'SYS_PONG',
-            timestamp: Date.now(),
-            senderId: 'sandbox_user',
-            correlationId: parsed.eventId || parsed.correlationId,
-            payload: {}
-          };
-          this.pongsSent.push(pongEnvelope);
+            // Canonical SYS_PONG response
+            const pongEnvelope: PulseEventEnvelope = {
+              eventId: generateUUIDv7(),
+              type: 'SYS_PONG',
+              timestamp: Date.now(),
+              senderId: 'sandbox_user',
+              correlationId: parsed.eventId || parsed.correlationId,
+              payload: {}
+            };
+            this.pongsSent.push(pongEnvelope);
 
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(pongEnvelope));
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify(pongEnvelope));
+            }
           }
         }
       } catch {
@@ -112,6 +116,70 @@ class TestSandboxSocketClient {
 
       this.scheduleReconnect();
     });
+  }
+
+  public broadcastRoomMessage(roomId: string, rawOrPayload: string | Record<string, unknown>): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    let frameToSend: Record<string, unknown>;
+    try {
+      const parsed = typeof rawOrPayload === 'string' ? JSON.parse(rawOrPayload) : rawOrPayload;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const candidateType = parsed.type;
+        if (candidateType === 'ROOM_MESSAGE' || candidateType === 'DIRECT_MESSAGE') {
+          frameToSend = {
+            ...parsed,
+            target: parsed.target && typeof parsed.target === 'object' ? parsed.target : { roomId },
+            timestamp: parsed.timestamp || Date.now(),
+            correlationId: parsed.correlationId || `corr-${Date.now()}`,
+            ackRequired: parsed.ackRequired ?? true
+          };
+        } else if (candidateType === 'MESSAGE_SEND' || candidateType === 'BROADCAST') {
+          const payloadData = parsed.payload !== undefined
+            ? parsed.payload
+            : parsed.data !== undefined
+              ? parsed.data
+              : parsed;
+          frameToSend = {
+            type: 'ROOM_MESSAGE',
+            target: { roomId: (parsed.target as any)?.roomId || parsed.room || roomId },
+            payload: typeof payloadData === 'object' && payloadData !== null ? payloadData : { content: String(payloadData) },
+            timestamp: Date.now(),
+            correlationId: parsed.correlationId || `corr-${Date.now()}`,
+            ackRequired: true
+          };
+        } else {
+          frameToSend = {
+            type: 'ROOM_MESSAGE',
+            target: { roomId },
+            payload: parsed,
+            timestamp: Date.now(),
+            correlationId: `corr-${Date.now()}`,
+            ackRequired: true
+          };
+        }
+      } else {
+        frameToSend = {
+          type: 'ROOM_MESSAGE',
+          target: { roomId },
+          payload: { content: parsed },
+          timestamp: Date.now(),
+          correlationId: `corr-${Date.now()}`,
+          ackRequired: true
+        };
+      }
+    } catch {
+      frameToSend = {
+        type: 'ROOM_MESSAGE',
+        target: { roomId },
+        payload: { content: String(rawOrPayload) },
+        timestamp: Date.now(),
+        correlationId: `corr-${Date.now()}`,
+        ackRequired: true
+      };
+    }
+
+    this.ws.send(JSON.stringify(frameToSend));
   }
 
   public scheduleReconnect(): void {
@@ -204,7 +272,7 @@ class TestSandboxSocketClient {
 
 describe('Traffic Sandbox WebSocket Lifecycle & Heartbeat', () => {
   let server: PulseServer;
-  const testPort = 9292;
+  const testPort = 9295;
   const authSecret = 'sandbox-lifecycle-secret-key-32chars-min';
   let token: string;
   let serverWsUrl: string;
@@ -282,20 +350,30 @@ describe('Traffic Sandbox WebSocket Lifecycle & Heartbeat', () => {
       clientBCloseReason = reason.toString();
     });
 
-    await new Promise<void>((resolve) => clientBWs.on('open', () => resolve()));
+    // Wait for client B to be reaped by HeartbeatManager (> 150ms interval + 150ms timeout)
+    const reapStart = Date.now();
+    while (clientBCloseCode === null && Date.now() - reapStart < 3000) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
 
-    // Wait 380ms (> 150ms interval + 150ms timeout)
-    await new Promise((r) => setTimeout(r, 380));
+    try {
+      // Client A is STILL OPEN because it responded to SYS_PING with SYS_PONG!
+      expect(clientA.ws?.readyState).toBe(WebSocket.OPEN);
+      expect(clientA.pongsSent.length).toBeGreaterThanOrEqual(1);
 
-    // Client A is STILL OPEN because it responded to SYS_PING with SYS_PONG!
-    expect(clientA.ws?.readyState).toBe(WebSocket.OPEN);
-    expect(clientA.pongsSent.length).toBeGreaterThanOrEqual(1);
-
-    // Client B was reaped by HeartbeatManager with code 1002 because it failed to send SYS_PONG!
-    expect(clientBCloseCode).toBe(1002);
-    expect(clientBCloseReason).toContain('Heartbeat timeout');
-
-    clientA.disconnect();
+      // Client B was reaped by HeartbeatManager with code 1002 because it failed to send SYS_PONG!
+      expect(clientBCloseCode).toBe(1002);
+      expect(clientBCloseReason).toContain('Heartbeat timeout');
+    } finally {
+      clientA.disconnect();
+      try {
+        if (clientBWs.readyState === WebSocket.OPEN || clientBWs.readyState === WebSocket.CONNECTING) {
+          clientBWs.terminate();
+        }
+      } catch {
+        // ignore
+      }
+    }
   });
 
   it('3. Intentional user disconnect cancels backoff and does not reconnect', async () => {
@@ -404,7 +482,10 @@ describe('Traffic Sandbox WebSocket Lifecycle & Heartbeat', () => {
     });
 
     // Verify connection dropped on server to free memory and presence
-    await new Promise((r) => setTimeout(r, 60));
+    const drainStart = Date.now();
+    while (server.getConnectionManager().getCount() > 0 && Date.now() - drainStart < 2000) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
     expect(server.getConnectionManager().getCount()).toBe(0);
 
     // Step B: User returns to Sandbox tab (simulating component remount)
@@ -465,6 +546,118 @@ describe('Traffic Sandbox WebSocket Lifecycle & Heartbeat', () => {
     expect(server.getConnectionManager().getCount()).toBe(1);
 
     client.disconnect();
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it('7. Dispatches canonical ROOM_MESSAGE frame targeting selected room, preserves payload, and confirms DELIVERY_ACK with zero BROADCAST wrapper', async () => {
+    const clientA = new TestSandboxSocketClient();
+    const clientB = new TestSandboxSocketClient();
+
+    clientA.connect(serverWsUrl);
+    clientB.connect(serverWsUrl);
+
+    // Wait for both to connect
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        if (clientA.status === 'connected' && clientB.status === 'connected') {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 10);
+    });
+
+    const testRoom = 'p4-test-room';
+
+    // Both join p4-test-room
+    clientA.ws?.send(JSON.stringify({
+      type: 'ROOM_JOIN',
+      target: { roomId: testRoom },
+      payload: { roomId: testRoom }
+    }));
+    clientB.ws?.send(JSON.stringify({
+      type: 'ROOM_JOIN',
+      target: { roomId: testRoom },
+      payload: { roomId: testRoom }
+    }));
+
+    // Wait for ROOM_JOIN_ACK on both
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        const ackA = clientA.messagesReceived.some((m) => m.type === 'ROOM_JOIN_ACK' && m.target?.roomId === testRoom);
+        const ackB = clientB.messagesReceived.some((m) => m.type === 'ROOM_JOIN_ACK' && m.target?.roomId === testRoom);
+        if (ackA && ackB) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 10);
+    });
+
+    // Case A: Traffic Sandbox dispatches raw UI payload mimicking the exact P4 reported frame:
+    // { type: "MESSAGE_SEND", target: { roomId: "p4-test-room" }, payload: { content: "Hello from P4" } }
+    const p4Payload = JSON.stringify({
+      type: 'MESSAGE_SEND',
+      target: { roomId: testRoom },
+      payload: { content: 'Hello from P4' }
+    });
+
+    clientA.broadcastRoomMessage(testRoom, p4Payload);
+
+    // Verify Client A receives canonical DELIVERY_ACK with status: ACCEPTED
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        const deliveryAck = clientA.messagesReceived.find((m) => m.type === 'DELIVERY_ACK');
+        if (deliveryAck) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 10);
+    });
+
+    const deliveryAck = clientA.messagesReceived.find((m) => m.type === 'DELIVERY_ACK')!;
+    expect(deliveryAck).toBeDefined();
+    expect((deliveryAck.payload as any).status).toBe('ACCEPTED');
+
+    // Verify Client B received canonical ROOM_MESSAGE with preserved payload
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        const roomMsg = clientB.messagesReceived.find((m) => m.type === 'ROOM_MESSAGE');
+        if (roomMsg) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 10);
+    });
+
+    const receivedOnB = clientB.messagesReceived.find((m) => m.type === 'ROOM_MESSAGE')!;
+    expect(receivedOnB).toBeDefined();
+    expect(receivedOnB.type).toBe('ROOM_MESSAGE');
+    expect(receivedOnB.target?.roomId).toBe(testRoom);
+    expect((receivedOnB.payload as any).content).toBe('Hello from P4');
+
+    // Verify NO SYS_ERROR with UNRECOGNIZED_EVENT_TYPE was ever emitted
+    const sysErrors = clientA.messagesReceived.filter((m) => m.type === 'SYS_ERROR');
+    expect(sysErrors).toHaveLength(0);
+
+    // Case B: Dispatches custom JSON object payload (e.g. { message: "Hello from Mission Control" })
+    const customPayload = { message: 'Hello from Mission Control', version: 'p4-final' };
+    clientA.broadcastRoomMessage(testRoom, customPayload);
+
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        const bMessages = clientB.messagesReceived.filter((m) => m.type === 'ROOM_MESSAGE');
+        if (bMessages.length >= 2) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 10);
+    });
+
+    const secondMsgOnB = clientB.messagesReceived.filter((m) => m.type === 'ROOM_MESSAGE')[1];
+    expect(secondMsgOnB.payload).toEqual(customPayload);
+    expect(secondMsgOnB.target?.roomId).toBe(testRoom);
+
+    clientA.disconnect();
+    clientB.disconnect();
     await new Promise((r) => setTimeout(r, 50));
   });
 });
